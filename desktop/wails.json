@@ -1,0 +1,1 @@
+{"name":"MiniShell","outputfilename":"MiniShell","frontend:install":"npm install","frontend:build":"npm run build","frontend:dev:watcher":"npm run dev -- --host 127.0.0.1","frontend:dev:serverUrl":"auto","author":{"name":"MiniShell"}}
