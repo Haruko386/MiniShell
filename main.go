@@ -10,13 +10,17 @@ import (
 	"time"
 
 	"github.com/Haruko386/MiniShell/internal"
+	"github.com/Haruko386/MiniShell/internal/service"
 	"github.com/gin-gonic/gin"
 )
 
 func main() {
 	e := gin.Default()
 
-	router := internal.NewRouter()
+	sessionSvr := service.NewSessionSvr()
+	fileSvr := service.NewFileSvr()
+
+	router := internal.NewRouter(sessionSvr, fileSvr)
 	router.Setup(e)
 
 	svr := http.Server{
@@ -41,6 +45,7 @@ func main() {
 	if err := svr.Shutdown(ctx); err != nil {
 		log.Fatal("Server Shutdown:", err)
 	}
+
 	router.Close()
 	log.Println("Server exiting")
 }

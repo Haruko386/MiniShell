@@ -10,13 +10,13 @@ import (
 	"sync"
 	"time"
 
-	"github.com/google/uuid"
+	"github.com/Haruko386/MiniShell/internal/common"
 	"golang.org/x/crypto/ssh"
 	"golang.org/x/crypto/ssh/knownhosts"
 )
 
 type SessionSvr struct {
-	mu       sync.Mutex
+	Mu       sync.Mutex
 	sessions map[string]*ssh.Client
 }
 
@@ -58,23 +58,23 @@ func (s *SessionSvr) Connect(host, username, password string, port int) (string,
 		return "", fmt.Errorf("cannot connect to %s: %v", addr, err)
 	}
 
-	id := uuid.NewString()
+	id := common.GenerateUUID()
 
-	s.mu.Lock()
+	s.Mu.Lock()
 	s.sessions[id] = client
-	s.mu.Unlock()
+	s.Mu.Unlock()
 
 	return id, nil
 }
 
 func (s *SessionSvr) Close(id string) error {
-	s.mu.Lock()
+	s.Mu.Lock()
 
 	client, ok := s.sessions[id]
 	if ok {
 		delete(s.sessions, id)
 	}
-	s.mu.Unlock()
+	s.Mu.Unlock()
 
 	if !ok {
 		return errors.New("session not found")
@@ -87,19 +87,19 @@ func (s *SessionSvr) Close(id string) error {
 }
 
 func (s *SessionSvr) Get(id string) (*ssh.Client, bool) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
+	s.Mu.Lock()
+	defer s.Mu.Unlock()
 	client, ok := s.sessions[id]
 	return client, ok
 }
 
 func (s *SessionSvr) CloseAll() {
-	s.mu.Lock()
+	s.Mu.Lock()
 
 	clients := s.sessions
 	s.sessions = make(map[string]*ssh.Client)
 
-	s.mu.Unlock()
+	s.Mu.Unlock()
 
 	for _, client := range clients {
 		_ = client.Close()

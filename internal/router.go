@@ -1,6 +1,8 @@
 package internal
 
 import (
+	"net/http"
+
 	"github.com/Haruko386/MiniShell/internal/handler"
 	"github.com/Haruko386/MiniShell/internal/service"
 	"github.com/gin-gonic/gin"
@@ -8,15 +10,15 @@ import (
 
 type Router struct {
 	sessionHandler *handler.SessionHandler
+	fileHandler    *handler.FileHandler
 	sessionSvr     *service.SessionSvr
 }
 
-func NewRouter() *Router {
-	sessionSvr := service.NewSessionSvr()
-	sessionHandler := handler.NewSessionHandler(sessionSvr)
+func NewRouter(sessionSvr *service.SessionSvr, fileSvr *service.FileSvr) *Router {
 
 	return &Router{
-		sessionHandler: sessionHandler,
+		sessionHandler: handler.NewSessionHandler(sessionSvr),
+		fileHandler:    handler.NewFileHandler(sessionSvr, fileSvr),
 		sessionSvr:     sessionSvr,
 	}
 }
@@ -25,7 +27,7 @@ func (r *Router) Setup(e *gin.Engine) {
 	api := e.Group("/api")
 	{
 		api.GET("/health", func(c *gin.Context) {
-			c.JSON(200, gin.H{
+			c.JSON(http.StatusOK, gin.H{
 				"status": "ok",
 			})
 		})
@@ -35,6 +37,9 @@ func (r *Router) Setup(e *gin.Engine) {
 			sessions.POST("", r.sessionHandler.Connect)
 			sessions.DELETE("/:id", r.sessionHandler.Close)
 			sessions.GET("/:id/terminal", r.sessionHandler.Terminal)
+			sessions.GET("/:id/files", r.fileHandler.List)
+			sessions.POST("/:id/files", r.fileHandler.Upload)
+			sessions.GET("/:id/download", r.fileHandler.Download)
 		}
 	}
 }
