@@ -41,5 +41,6 @@ func main() {
 	if err := svr.Shutdown(ctx); err != nil {
 		log.Fatal("Server Shutdown:", err)
 	}
+	router.Close()
 	log.Println("Server exiting")
 }

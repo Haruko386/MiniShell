@@ -8,6 +8,7 @@ import (
 
 type Router struct {
 	sessionHandler *handler.SessionHandler
+	sessionSvr     *service.SessionSvr
 }
 
 func NewRouter() *Router {
@@ -16,6 +17,7 @@ func NewRouter() *Router {
 
 	return &Router{
 		sessionHandler: sessionHandler,
+		sessionSvr:     sessionSvr,
 	}
 }
 
@@ -32,6 +34,11 @@ func (r *Router) Setup(e *gin.Engine) {
 		{
 			sessions.POST("", r.sessionHandler.Connect)
 			sessions.DELETE("/:id", r.sessionHandler.Close)
+			sessions.GET("/:id/terminal", r.sessionHandler.Terminal)
 		}
 	}
+}
+
+func (r *Router) Close() {
+	r.sessionSvr.CloseAll()
 }

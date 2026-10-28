@@ -85,3 +85,23 @@ func (s *SessionSvr) Close(id string) error {
 	}
 	return nil
 }
+
+func (s *SessionSvr) Get(id string) (*ssh.Client, bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	client, ok := s.sessions[id]
+	return client, ok
+}
+
+func (s *SessionSvr) CloseAll() {
+	s.mu.Lock()
+
+	clients := s.sessions
+	s.sessions = make(map[string]*ssh.Client)
+
+	s.mu.Unlock()
+
+	for _, client := range clients {
+		_ = client.Close()
+	}
+}

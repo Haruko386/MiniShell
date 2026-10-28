@@ -1,6 +1,6 @@
 # MiniShell 前后端接口约定
 
-前端启动：`npm install`，`npm run dev`。开发服务器将 `/api` 代理到 `localhost:8080`。连接配置保存在浏览器 localStorage，密码只在连接时输入，不持久化。
+前端启动：`npm install`，`npm run dev`。开发服务器将 `/api` 代理到 `localhost:8080`。连接配置保存在浏览器 localStorage，密码在连接编辑时输入，与连接配置一起明文保存在浏览器 localStorage。
 
 ## 建议实现顺序
 
