@@ -1,6 +1,7 @@
 package service
 
 import (
+	"errors"
 	"fmt"
 	"net"
 	"os"
@@ -64,4 +65,23 @@ func (s *SessionSvr) Connect(host, username, password string, port int) (string,
 	s.mu.Unlock()
 
 	return id, nil
+}
+
+func (s *SessionSvr) Close(id string) error {
+	s.mu.Lock()
+
+	client, ok := s.sessions[id]
+	if ok {
+		delete(s.sessions, id)
+	}
+	s.mu.Unlock()
+
+	if !ok {
+		return errors.New("session not found")
+	}
+
+	if err := client.Close(); err != nil {
+		return fmt.Errorf("close SSH connection: %v", err)
+	}
+	return nil
 }

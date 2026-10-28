@@ -19,6 +19,7 @@ func NewSessionHandler(sessionSvr *service.SessionSvr) *SessionHandler {
 	}
 }
 
+// Connect to remote ssh
 func (h *SessionHandler) Connect(c *gin.Context) {
 	var req dto.CreateSessionRequest
 
@@ -71,4 +72,24 @@ func (h *SessionHandler) Connect(c *gin.Context) {
 		"id":      id,
 		"message": "success",
 	})
+}
+
+// Close the connection
+func (h *SessionHandler) Close(c *gin.Context) {
+	id := strings.TrimSpace(c.Param("id"))
+	if id == "" {
+		c.JSON(http.StatusBadRequest, gin.H{
+			"message": "invalid request ID",
+		})
+		return
+	}
+
+	if err := h.sessionSvr.Close(id); err != nil {
+		c.JSON(http.StatusNotFound, gin.H{
+			"message": err.Error(),
+		})
+		return
+	}
+
+	c.Status(http.StatusNoContent)
 }

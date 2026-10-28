@@ -31,6 +31,7 @@ func (r *Router) Setup(e *gin.Engine) {
 		sessions := api.Group("/sessions")
 		{
 			sessions.POST("", r.sessionHandler.Connect)
+			sessions.DELETE("/:id", r.sessionHandler.Close)
 		}
 	}
 }
