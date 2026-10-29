@@ -48,4 +48,5 @@ temp/
 # Local agent instructions and task notes
 agent.md
 AGENTS.md
+/.zcode/
 BACKEND_TASKS.md
