@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"net"
 	"net/http"
-	"os"
 	"path"
 	"path/filepath"
 	"strings"
@@ -25,6 +24,8 @@ type App struct {
 	server      *http.Server
 	router      *internal.Router
 	manager     *engine.Manager
+	sessions    *service.SessionSvr
+	files       *service.FileSvr
 	base, token string
 }
 
@@ -56,8 +57,10 @@ func (a *App) startServer() error {
 	httpEngine.Use(gin.Recovery())
 	sessions := service.NewSessionSvr()
 	files := service.NewFileSvr()
+	a.sessions = sessions
+	a.files = files
 	a.manager = engine.NewManager(sessions, files)
-	if err := a.manager.Start(550); err != nil {
+	if err := a.manager.Start(6); err != nil {
 		_ = ln.Close()
 		return err
 	}
@@ -104,20 +107,109 @@ func (a *App) ChooseDirectory() (string, error) {
 func (a *App) ChooseFiles() ([]string, error) {
 	return runtime.OpenMultipleFilesDialog(a.ctx, runtime.OpenDialogOptions{Title: "选择上传文件"})
 }
+func (a *App) ChooseUploadDirectory() (string, error) {
+	return runtime.OpenDirectoryDialog(a.ctx, runtime.OpenDialogOptions{Title: "选择上传文件夹"})
+}
 
-// SubmitUpload queues one local file for transfer to the remote directory.
-func (a *App) SubmitUpload(session, remoteDir, localPath string) (string, error) {
+type UploadTask struct {
+	ID   string `json:"id"`
+	Name string `json:"name"`
+	Size int64  `json:"size"`
+}
+
+type UploadResult struct {
+	Tasks           []UploadTask `json:"tasks"`
+	Directories     int          `json:"directories"`
+	Skipped         []string     `json:"skipped"`
+	SubmissionError string       `json:"submissionError"`
+}
+
+// SubmitUpload scans a local file or folder, creates remote directories,
+// then queues one task per regular file.
+func (a *App) SubmitUpload(session, remoteDir, localPath string) (UploadResult, error) {
+	return a.submitUpload(session, remoteDir, localPath, nil)
+}
+
+// SubmitUploadStreaming emits each accepted task so the UI can track it immediately.
+func (a *App) SubmitUploadStreaming(session, remoteDir, localPath, requestID string) (UploadResult, error) {
+	if requestID == "" {
+		return UploadResult{}, fmt.Errorf("request ID is required")
+	}
+	return a.submitUpload(session, remoteDir, localPath, func(task UploadTask) {
+		runtime.EventsEmit(a.ctx, "upload:task", UploadTaskEvent{RequestID: requestID, Task: task})
+	})
+}
+
+type UploadTaskEvent struct {
+	RequestID string     `json:"requestId"`
+	Task      UploadTask `json:"task"`
+}
+
+func (a *App) submitUpload(session, remoteDir, localPath string, accepted func(UploadTask)) (UploadResult, error) {
 	if !filepath.IsAbs(localPath) || !path.IsAbs(remoteDir) {
-		return "", fmt.Errorf("local and remote paths must be absolute")
+		return UploadResult{}, fmt.Errorf("local and remote paths must be absolute")
 	}
-	info, err := os.Stat(localPath)
+
+	plan, err := buildUploadPlan(localPath, remoteDir)
 	if err != nil {
-		return "", err
+		return UploadResult{}, err
 	}
-	if !info.Mode().IsRegular() {
-		return "", fmt.Errorf("only regular files can be uploaded: %s", localPath)
+
+	if len(plan.dirs) > 0 {
+		if a.sessions == nil || a.files == nil {
+			return UploadResult{}, fmt.Errorf("file services are not initialized")
+		}
+
+		client, err := a.sessions.GetSFTP(session)
+		if err != nil {
+			return UploadResult{}, err
+		}
+		if err := a.files.MkdirAll(client, remoteDir, plan.dirs); err != nil {
+			return UploadResult{}, err
+		}
 	}
-	return a.manager.Submit(a.ctx, entity.Task{SessionID: session, Direction: "upload", LocalPath: localPath, RemotePath: path.Join(remoteDir, filepath.Base(localPath))})
+
+	skipped := plan.skipped
+	if skipped == nil {
+		skipped = []string{}
+	}
+
+	result := UploadResult{
+		Tasks:       make([]UploadTask, 0, len(plan.files)),
+		Directories: len(plan.dirs),
+		Skipped:     skipped,
+	}
+
+	return a.submitPlannedFiles(session, remoteDir, plan.files, result, accepted)
+}
+
+func (a *App) submitPlannedFiles(session, remoteDir string, files []uploadFile, result UploadResult, accepted func(UploadTask)) (UploadResult, error) {
+	for _, file := range files {
+		id, err := a.manager.Submit(a.ctx, entity.Task{
+			SessionID:     session,
+			Direction:     "upload",
+			LocalPath:     file.localPath,
+			RemotePath:    file.remotePath,
+			RemoteBase:    remoteDir,
+			VerifySource:  true,
+			SourceSize:    file.size,
+			SourceModTime: file.modTime,
+		})
+		if err != nil {
+			if len(result.Tasks) == 0 {
+				return result, err
+			}
+			result.SubmissionError = err.Error()
+			return result, nil
+		}
+
+		task := UploadTask{ID: id, Name: file.name, Size: file.size}
+		result.Tasks = append(result.Tasks, task)
+		if accepted != nil {
+			accepted(task)
+		}
+	}
+	return result, nil
 }
 
 // SubmitDownload queues one remote file for download to a local directory.
