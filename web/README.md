@@ -4,7 +4,7 @@
 
 ## 建议实现顺序
 
-1. 用 Go HTTP 服务实现会话创建：`POST /api/sessions`，JSON 请求 `{host, port, username, password}`，响应 `{id}`。服务端连接 SSH 并为该会话保留 SSH client；失败返回非 2xx 和 `{message}`。会话 ID 应随机且不可预测。首次遇到未知主机密钥时返回 `409` 和 `{hostKey:{host,port,keyType,fingerprint,changed,known}}`；前端确认后重试，并带上 `hostKeyMode:"once"|"save"` 和 `hostKeyFingerprint`。`save` 会追加到 `~/.ssh/known_hosts`；主机密钥变化时只报错，不允许直接接受。
+1. 用 Go HTTP 服务实现会话创建：`POST /api/sessions`，JSON 请求 `{host, port, username, password}`，响应 `{id}`。服务端连接 SSH 并为该会话保留 SSH client；失败返回非 2xx 和 `{message}`。会话 ID 应随机且不可预测。首次遇到未知主机密钥时返回 `409` 和 `{hostKey:{host,port,keyType,fingerprint,changed,known}}`；前端确认后重试，并带上 `hostKeyMode:"once"|"save"|"replace"` 和 `hostKeyFingerprint`。`save` 会追加到 `~/.ssh/known_hosts`；`replace` 仅在同类主机密钥确实变化时使用，删除旧记录后写入新密钥。不同密钥类型分别信任。
 2. `GET /api/sessions/{id}/terminal` 升级为 WebSocket。客户端发 JSON：`{"type":"input","data":"..."}` 或 `{"type":"resize","cols":80,"rows":24}`；服务端发 `{"type":"output","data":"..."}` 或 `{"type":"error","message":"..."}`。SSH 申请 PTY、启动 shell，双向转发字节；resize 调用 SSH window change。WebSocket 断开时释放 shell。
 3. `GET /api/sessions/{id}/files?path=/root`，通过 SFTP 读取目录，返回 `{path:"/root", entries:[{name:"Dataset", type:"directory", size:0, modifiedAt:"2026-01-01T00:00:00Z"}]}`。`type` 为 `directory` 或 `file`。path 返回服务端解析后的绝对路径。
 4. `POST /api/sessions/{id}/files?path=/root/Dataset` 接收 multipart/form-data 的 `file` 字段，通过 SFTP 流式写入目标目录，成功返回 2xx，失败返回 `{message}`。可选 `relative` 字段与 `file` 顺序一致，值为相对路径（如 `project/src/main.go`），用于保留文件夹层级；后端会创建所需父目录。前端对多个文件并发发请求（最多 3 个）；后端可用有限 worker 控制并发。先实现单文件流式传输，再测量瓶颈，避免无限 goroutine 和整文件读入内存。

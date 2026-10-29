@@ -185,14 +185,22 @@ async function api(url: string, init?: RequestInit) {
 }
 
 function askHostKey(info: HostKeyInfo) {
-    return new Promise<'once' | 'save' | null>(resolve => {
+    return new Promise<'once' | 'save' | 'replace' | null>(resolve => {
+        const changed = info.changed;
+        const title = changed ? '主机密钥已变化' : '首次连接';
+        const warning = changed
+            ? `<p class="form-note">已保存：${esc((info.known || []).join('、') || '无')}</p><p class="form-note">如果不是服务器重装或换机，请取消连接。</p>`
+            : '';
+        const primary = changed
+            ? '<button class="button primary" value="replace">替换并保存</button>'
+            : '<button class="button primary" value="save">永久保存</button>';
         const dialog = document.createElement('dialog');
-        dialog.innerHTML = `<form method="dialog" class="dialog-content"><div class="dialog-heading"><div><div class="eyebrow">HOST KEY</div><h2>首次连接</h2><p>${esc(info.host)}:${info.port}</p></div></div><p class="form-note">密钥类型：${esc(info.keyType)}</p><p class="form-note">指纹：${esc(info.fingerprint)}</p><div class="dialog-actions"><button class="button secondary" value="cancel">取消</button><button class="button secondary" value="once">仅本次</button><button class="button primary" value="save">永久保存</button></div></form>`;
+        dialog.innerHTML = `<form method="dialog" class="dialog-content"><div class="dialog-heading"><div><div class="eyebrow">HOST KEY</div><h2>${title}</h2><p>${esc(info.host)}:${info.port}</p></div></div><p class="form-note">密钥类型：${esc(info.keyType)}</p><p class="form-note">当前指纹：${esc(info.fingerprint)}</p>${warning}<div class="dialog-actions"><button class="button secondary" value="cancel">取消</button><button class="button secondary" value="once">仅本次</button>${primary}</div></form>`;
         document.body.appendChild(dialog);
         dialog.addEventListener('close', () => {
             const value = dialog.returnValue;
             dialog.remove();
-            resolve(value === 'once' || value === 'save' ? value : null)
+            resolve(value === 'once' || value === 'save' || value === 'replace' ? value : null)
         }, {once: true});
         dialog.showModal()
     })
@@ -210,9 +218,6 @@ async function createSession(body: Record<string, unknown>) {
         const apiErr = err as ApiError;
         const info = apiErr.data?.hostKey;
         if (apiErr.status !== 409 || !info) throw err;
-        if (info.changed) {
-            throw new Error(`主机密钥已变化。当前指纹：${info.fingerprint}；已保存：${(info.known || []).join('、') || '无'}`)
-        }
         const mode = await askHostKey(info);
         if (!mode) throw new Error('已取消连接');
         const response = await api('/api/sessions', {
