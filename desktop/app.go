@@ -4,17 +4,17 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/hex"
-	"encoding/json"
 	"fmt"
-	"io"
-	"mime/multipart"
 	"net"
 	"net/http"
 	"os"
+	"path"
 	"path/filepath"
 	"strings"
 
 	"github.com/Haruko386/MiniShell/internal"
+	"github.com/Haruko386/MiniShell/internal/engine"
+	"github.com/Haruko386/MiniShell/internal/entity"
 	"github.com/Haruko386/MiniShell/internal/service"
 	"github.com/gin-gonic/gin"
 	"github.com/wailsapp/wails/v2/pkg/runtime"
@@ -24,6 +24,7 @@ type App struct {
 	ctx         context.Context
 	server      *http.Server
 	router      *internal.Router
+	manager     *engine.Manager
 	base, token string
 }
 
@@ -32,6 +33,9 @@ func (a *App) startup(ctx context.Context) { a.ctx = ctx }
 func (a *App) shutdown(ctx context.Context) {
 	if a.server != nil {
 		_ = a.server.Shutdown(ctx)
+	}
+	if a.manager != nil {
+		a.manager.Stop()
 	}
 	if a.router != nil {
 		a.router.Close()
@@ -48,10 +52,17 @@ func (a *App) startServer() error {
 		return err
 	}
 	a.base = "http://" + ln.Addr().String()
-	engine := gin.New()
-	engine.Use(gin.Recovery())
-	a.router = internal.NewRouter(service.NewSessionSvr(), service.NewFileSvr())
-	a.router.Setup(engine)
+	httpEngine := gin.New()
+	httpEngine.Use(gin.Recovery())
+	sessions := service.NewSessionSvr()
+	files := service.NewFileSvr()
+	a.manager = engine.NewManager(sessions, files)
+	if err := a.manager.Start(550); err != nil {
+		_ = ln.Close()
+		return err
+	}
+	a.router = internal.NewRouter(sessions, files)
+	a.router.Setup(httpEngine)
 	a.server = &http.Server{Handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		origin := r.Header.Get("Origin")
 		if origin != "" && origin != "http://wails.localhost" && origin != "http://localhost:34115" {
@@ -75,7 +86,7 @@ func (a *App) startServer() error {
 		if strings.EqualFold(r.Header.Get("Upgrade"), "websocket") {
 			r.Header.Set("Origin", "http://localhost:5173")
 		}
-		engine.ServeHTTP(w, r)
+		httpEngine.ServeHTTP(w, r)
 	})}
 	go func() { _ = a.server.Serve(ln) }()
 	return nil
@@ -93,56 +104,46 @@ func (a *App) ChooseDirectory() (string, error) {
 func (a *App) ChooseFiles() ([]string, error) {
 	return runtime.OpenMultipleFilesDialog(a.ctx, runtime.OpenDialogOptions{Title: "选择上传文件"})
 }
-func (a *App) UploadFile(session, remoteDir, localPath string) error {
-	f, err := os.Open(localPath)
-	if err != nil {
-		return err
+
+// SubmitUpload queues one local file for transfer to the remote directory.
+func (a *App) SubmitUpload(session, remoteDir, localPath string) (string, error) {
+	if !filepath.IsAbs(localPath) || !path.IsAbs(remoteDir) {
+		return "", fmt.Errorf("local and remote paths must be absolute")
 	}
-	defer f.Close()
-	info, err := f.Stat()
+	info, err := os.Stat(localPath)
 	if err != nil {
-		return err
+		return "", err
 	}
 	if !info.Mode().IsRegular() {
-		return fmt.Errorf("只支持上传普通文件: %s", localPath)
+		return "", fmt.Errorf("only regular files can be uploaded: %s", localPath)
 	}
-	pr, pw := io.Pipe()
-	mw := multipart.NewWriter(pw)
-	go func() {
-		part, err := mw.CreateFormFile("file", filepath.Base(localPath))
-		if err == nil {
-			_, err = io.Copy(part, f)
-		}
-		if err == nil {
-			err = mw.Close()
-		}
-		_ = pw.CloseWithError(err)
-	}()
-	req, err := http.NewRequest("POST", a.base+"/api/sessions/"+session+"/files", pr)
-	if err != nil {
-		_ = pr.Close()
-		return err
+	return a.manager.Submit(a.ctx, entity.Task{SessionID: session, Direction: "upload", LocalPath: localPath, RemotePath: path.Join(remoteDir, filepath.Base(localPath))})
+}
+
+// SubmitDownload queues one remote file for download to a local directory.
+func (a *App) SubmitDownload(session, remotePath, localDir string) (string, error) {
+	if !path.IsAbs(remotePath) || !filepath.IsAbs(localDir) {
+		return "", fmt.Errorf("local and remote paths must be absolute")
 	}
-	q := req.URL.Query()
-	q.Set("path", remoteDir)
-	req.URL.RawQuery = q.Encode()
-	req.Header.Set("Content-Type", mw.FormDataContentType())
-	req.Header.Set("X-Minishell-Token", a.token)
-	resp, err := http.DefaultClient.Do(req)
-	if err != nil {
-		_ = pr.Close()
-		return err
+	return a.manager.Submit(a.ctx, entity.Task{SessionID: session, Direction: "download", LocalPath: localDir, RemotePath: remotePath})
+}
+
+type TransferStatus struct {
+	Status           string `json:"status"`
+	Error            string `json:"error"`
+	TransferredBytes int64  `json:"transferredBytes"`
+	TotalBytes       int64  `json:"totalBytes"`
+}
+
+// TransferStatus returns a serializable snapshot of a queued task.
+func (a *App) TransferStatus(id string) (TransferStatus, error) {
+	status, ok := a.manager.GetStatus(id)
+	if !ok {
+		return TransferStatus{}, fmt.Errorf("task not found: %s", id)
 	}
-	defer resp.Body.Close()
-	if resp.StatusCode >= 300 {
-		var msg struct {
-			Message string `json:"message"`
-		}
-		_ = json.NewDecoder(resp.Body).Decode(&msg)
-		if msg.Message == "" {
-			msg.Message = resp.Status
-		}
-		return fmt.Errorf("%s", msg.Message)
+	result := TransferStatus{Status: status.Status, TransferredBytes: status.TransferredBytes, TotalBytes: status.TotalBytes}
+	if status.Error != nil {
+		result.Error = status.Error.Error()
 	}
-	return nil
+	return result, nil
 }

@@ -1,4 +1,4 @@
-declare global { interface Window { go: { main: { App: { Backend():Promise<{base:string;token:string}>; ChooseDirectory():Promise<string>; ChooseFiles():Promise<string[]>; UploadFile(session:string,remote:string,file:string):Promise<void> } } }; runtime: { OnFileDrop(callback:(x:number,y:number,paths:string[])=>void,useDropTarget:boolean):void } } }
+declare global { interface Window { go: { main: { App: { Backend():Promise<{base:string;token:string}>; ChooseDirectory():Promise<string>; ChooseFiles():Promise<string[]>; SubmitUpload(session:string,remote:string,file:string):Promise<string>; SubmitDownload(session:string,remote:string,local:string):Promise<string>; TransferStatus(id:string):Promise<{status:string;error:string;transferredBytes:number;totalBytes:number}> } } }; runtime: { OnFileDrop(callback:(x:number,y:number,paths:string[])=>void,useDropTarget:boolean):void } } }
 let backend={base:'',token:''}
 const desktop=()=>window.go.main.App
 import { Terminal } from '@xterm/xterm'
@@ -9,7 +9,7 @@ import './style.css'
 
 type Connection = { id:string; name:string; host:string; port:number; username:string; password?:string }
 type Entry = { name:string; type:'file'|'directory'; size:number; modifiedAt:string }
-type Transfer = { name:string; progress:number; status:string }
+type Transfer = { name:string; progress:number; status:string; error?:string; direction?:'upload'|'download'; speed?:number; speedAt?:number }
 const key = 'minishell.connections.v1'
 let connections:Connection[] = JSON.parse(localStorage.getItem(key) || '[]')
 let selected = connections[0]?.id || ''
@@ -49,13 +49,52 @@ function renderFiles(){ $('#file-list').innerHTML=entries.map(f=>`<div class="fi
 $('#file-list').onclick=e=>{const mouse=e as MouseEvent, target=e.target as HTMLElement; const row=target.closest<HTMLElement>('.file-row'); if(!row?.dataset.name)return; if(target.closest('[data-download]')){void downloadFile(row.dataset.name);return} const index=entries.findIndex(f=>f.name===row.dataset.name); if(mouse.shiftKey&&selectionAnchor>=0){if(!mouse.ctrlKey)selectedFiles.clear(); for(let i=Math.min(selectionAnchor,index);i<=Math.max(selectionAnchor,index);i++)if(entries[i].type==='file')selectedFiles.add(entries[i].name)}else if(entries[index]?.type==='file'){if(!mouse.ctrlKey&&!mouse.metaKey)selectedFiles.clear(); if((mouse.ctrlKey||mouse.metaKey)&&selectedFiles.has(row.dataset.name))selectedFiles.delete(row.dataset.name);else selectedFiles.add(row.dataset.name); selectionAnchor=index}else {selectedFiles.clear();selectionAnchor=index} document.querySelectorAll<HTMLElement>('.file-row').forEach(row=>row.classList.toggle('selected',selectedFiles.has(row.dataset.name||''))); $<HTMLButtonElement>('#download-selected').disabled=selectedFiles.size===0}
 $('#download-selected').onclick=async()=>{if(!selectedFiles.size)return; const local=await desktop().ChooseDirectory(); if(!local)return; for(const name of [...selectedFiles])await downloadFile(name,local)}
 
-async function downloadFile(name:string,chosenDir?:string){if(!session){toast('请先连接服务器');return} const local=chosenDir||await desktop().ChooseDirectory(); if(!local)return; if(!local.trim()){toast('请填写本地保存目录');return} localStorage.setItem('minishell.downloadDirectory',local.trim()); const sid=session, remote=`${currentPath.replace(/\/$/,'')}/${name}`; const transfer:Transfer={name,progress:0,status:'下载中'}; transfers.push(transfer); $('#transfers').classList.remove('hidden'); renderTransfers(); try{await api(`/api/sessions/${encodeURIComponent(sid)}/download?path=${encodeURIComponent(remote)}&local=${encodeURIComponent(local.trim())}`,{cache:'no-store'}); transfer.progress=100; transfer.status='完成'; toast('下载完成')}catch(err){transfer.status='失败'; toast(err instanceof Error?err.message:'下载失败')} finally{renderTransfers()}}
+async function downloadFile(name:string,chosenDir?:string){
+ if(!session){toast('请先连接服务器');return}
+ const local=chosenDir||await desktop().ChooseDirectory(); if(!local)return
+ const sid=session, remote=`${currentPath.replace(/\/$/,'')}/${name}`
+ const transfer:Transfer={name,progress:0,status:'提交中',direction:'download'}; transfers.push(transfer); $('#transfers').classList.remove('hidden'); renderTransfers()
+ try{const id=await desktop().SubmitDownload(sid,remote,local); void monitorTask(id,transfer)}catch(err){transfer.status='失败';transfer.error=String(err);renderTransfers();toast(transfer.error)}
+}
+
 $('#file-list').ondblclick=e=>{if((e.target as HTMLElement).closest('[data-download]'))return; const row=(e.target as HTMLElement).closest<HTMLElement>('.file-row'); if(row?.dataset.type==='directory')loadFiles(`${currentPath.replace(/\/$/,'')}/${row.dataset.name}`)}
 $('#path-form').onsubmit=e=>{e.preventDefault();loadFiles($<HTMLInputElement>('#path').value)}; $('#up').onclick=()=>loadFiles(currentPath.replace(/\/+$/,'').replace(/\/[^/]*$/,'')||'/'); $('#refresh').onclick=()=>loadFiles(currentPath)
 $('#choose').onclick=async()=>{if(!session){toast('请先连接服务器');return} try{const files=await desktop().ChooseFiles(); if(files?.length) await uploadPaths(files)}catch(err){toast(String(err))}}
-async function uploadPaths(files:string[]){if(!session){toast('请先连接服务器');return} const sid=session,path=currentPath; const jobs=files.map(file=>({file,transfer:{name:file.split(/[\\/]/).pop()||file,progress:0,status:'等待中'}})); transfers.push(...jobs.map(j=>j.transfer)); $('#transfers').classList.remove('hidden'); renderTransfers(); let next=0; async function worker(){while(next<jobs.length){const job=jobs[next++]; job.transfer.status='上传中';renderTransfers();try{await desktop().UploadFile(sid,path,job.file);job.transfer.status='完成';job.transfer.progress=100}catch(err){job.transfer.status='失败';toast(String(err))}renderTransfers()}} await Promise.all(Array.from({length:Math.min(3,jobs.length)},worker)); if(session===sid&&currentPath===path)await loadFiles(path)}
+async function uploadPaths(files:string[]){
+ if(!session){toast('请先连接服务器');return}
+ const sid=session,remoteDir=currentPath
+ for(const file of files){
+  const transfer:Transfer={name:file.split(/[\\/]/).pop()||file,progress:0,status:'提交中',direction:'upload'};transfers.push(transfer);$('#transfers').classList.remove('hidden');renderTransfers()
+  try{const id=await desktop().SubmitUpload(sid,remoteDir,file);void monitorTask(id,transfer,()=>{if(session===sid&&currentPath===remoteDir)void loadFiles(remoteDir)})}
+  catch(err){transfer.status='失败';transfer.error=String(err);renderTransfers();toast(transfer.error)}
+ }
+}
+async function monitorTask(id:string,transfer:Transfer,onSuccess?:()=>void){
+ let previousBytes=0, previousTime=performance.now()
+ try{
+  while(true){
+   const result=await desktop().TransferStatus(id)
+   const now=performance.now()
+   if(transfer.direction==='upload'){
+    const elapsed=(now-previousTime)/1000
+    if(elapsed>0){transfer.speed=Math.max(0,(result.transferredBytes-previousBytes)/elapsed);transfer.speedAt=Date.now()}
+    previousBytes=result.transferredBytes;previousTime=now
+    if(result.totalBytes>0)transfer.progress=Math.min(99,Math.floor(result.transferredBytes/result.totalBytes*100))
+   }
+   if(result.status==='created')transfer.status='等待中'
+   else if(result.status==='in_progress')transfer.status='传输中'
+   else if(result.status==='success'){transfer.status='完成';transfer.progress=100;transfer.speed=0;renderTransfers();onSuccess?.();return}
+   else if(result.status==='failed'){transfer.status='失败';transfer.speed=0;transfer.error=result.error;renderTransfers();return}
+   else throw new Error('未知任务状态: '+result.status)
+   renderTransfers();await new Promise(resolve=>setTimeout(resolve,500))
+  }
+ }catch(err){transfer.status='状态未知';transfer.error=String(err);renderTransfers()}
+}
 
-function renderTransfers(){const done=transfers.filter(t=>t.status==='完成').length; $('#transfer-summary').textContent=transfers.length?`${done} / ${transfers.length} 已完成`:'暂无传输任务'; $('#transfers').innerHTML=transfers.map(t=>`<div class="transfer-row"><span>${icon('file',15)} ${esc(t.name)}</span><div class="progress"><div style="width:${t.progress}%"></div></div><span>${esc(t.status)}</span></div>`).join('');iconsRefresh()}
+function formatSpeed(bytes:number){if(bytes>=1_000_000)return `${(bytes/1_000_000).toFixed(1)} MB/s`;if(bytes>=1_000)return `${(bytes/1_000).toFixed(1)} KB/s`;return `${Math.round(bytes)} B/s`}
+let renderTimer:ReturnType<typeof setTimeout>|undefined
+function renderTransfers(){if(renderTimer)return;renderTimer=setTimeout(()=>{renderTimer=undefined;const done=transfers.filter(t=>t.status==='完成').length;const totalSpeed=transfers.reduce((sum,t)=>sum+(t.direction==='upload'&&t.status==='传输中'&&Date.now()-(t.speedAt||0)<2000?(t.speed||0):0),0);$('#transfer-summary').textContent=transfers.length?`${done} / ${transfers.length} 已完成  |  上传 ${formatSpeed(totalSpeed)}`:'暂无传输任务';$('#transfers').innerHTML=transfers.map(t=>`<div class="transfer-row"><span>${icon('file',15)} ${esc(t.name)}</span><div class="progress"><div style="width:${t.progress}%"></div></div><span title="${esc(t.error||'')}">${esc(t.status)}${t.direction==='upload'&&t.status==='传输中'?` ${formatSpeed(t.speed||0)}`:''}${t.error?`：${esc(t.error)}`:''}</span></div>`).join('');iconsRefresh()},150)}
+
 $('#toggle-transfers').onclick=()=>$('#transfers').classList.toggle('hidden')
 
 renderConnections(); renderFiles(); setConnected(false); iconsRefresh()
