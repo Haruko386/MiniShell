@@ -151,10 +151,11 @@ func (m *Manager) worker(id int) {
 }
 
 func (m *Manager) work(task entity.Task) error {
-	sftpClient, err := m.SessionSvr.GetSFTP(task.SessionID)
+	sftpClient, release, err := m.SessionSvr.AcquireSFTP(task.SessionID)
 	if err != nil {
-		return fmt.Errorf("session %s: %w", task.SessionID, err)
+		return fmt.Errorf("acquire sftp: %w", err)
 	}
+	defer release()
 
 	switch task.Direction {
 	case "upload":

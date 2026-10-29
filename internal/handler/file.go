@@ -38,7 +38,7 @@ func (h *FileHandler) List(c *gin.Context) {
 		return
 	}
 
-	sftpClient, err := h.sessionSvr.GetSFTP(id)
+	sftpClient, release, err := h.sessionSvr.AcquireSFTP(id)
 	if err != nil {
 		status := http.StatusBadGateway
 		if errors.Is(err, service.ErrSessionNotFound) {
@@ -49,6 +49,7 @@ func (h *FileHandler) List(c *gin.Context) {
 		})
 		return
 	}
+	defer release()
 
 	realPath, entries, err := h.fileSvr.List(sftpClient, dirPath)
 	if err != nil {
@@ -81,7 +82,7 @@ func (h *FileHandler) Upload(c *gin.Context) {
 		return
 	}
 
-	sftpClient, err := h.sessionSvr.GetSFTP(id)
+	sftpClient, release, err := h.sessionSvr.AcquireSFTP(id)
 	if err != nil {
 		status := http.StatusBadGateway
 		if errors.Is(err, service.ErrSessionNotFound) {
@@ -92,6 +93,7 @@ func (h *FileHandler) Upload(c *gin.Context) {
 		})
 		return
 	}
+	defer release()
 
 	form, err := c.MultipartForm()
 	if err != nil {
@@ -166,7 +168,7 @@ func (h *FileHandler) Download(c *gin.Context) {
 		return
 	}
 
-	sftpClient, err := h.sessionSvr.GetSFTP(id)
+	sftpClient, release, err := h.sessionSvr.AcquireSFTP(id)
 	if err != nil {
 		status := http.StatusBadGateway
 		if errors.Is(err, service.ErrSessionNotFound) {
@@ -177,6 +179,7 @@ func (h *FileHandler) Download(c *gin.Context) {
 		})
 		return
 	}
+	defer release()
 
 	if err := h.fileSvr.Download(sftpClient, dirPath, localPath); err != nil {
 		c.JSON(http.StatusBadGateway, gin.H{

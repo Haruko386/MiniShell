@@ -160,11 +160,15 @@ func (a *App) submitUpload(session, remoteDir, localPath string, accepted func(U
 			return UploadResult{}, fmt.Errorf("file services are not initialized")
 		}
 
-		client, err := a.sessions.GetSFTP(session)
+		client, release, err := a.sessions.AcquireSFTP(session)
 		if err != nil {
 			return UploadResult{}, err
 		}
-		if err := a.files.MkdirAll(client, remoteDir, plan.dirs); err != nil {
+
+		err = a.files.MkdirAll(client, remoteDir, plan.dirs)
+		release()
+
+		if err != nil {
 			return UploadResult{}, err
 		}
 	}
