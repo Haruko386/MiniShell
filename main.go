@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/Haruko386/MiniShell/internal"
+	"github.com/Haruko386/MiniShell/internal/engine"
 	"github.com/Haruko386/MiniShell/internal/service"
 	"github.com/gin-gonic/gin"
 )
@@ -34,6 +35,9 @@ func main() {
 		}
 	}()
 
+	fileManager := engine.NewManager(sessionSvr, fileSvr)
+	_ = fileManager.Start(50)
+
 	quit := make(chan os.Signal, 1)
 	signal.Notify(quit, os.Interrupt)
 	<-quit
@@ -46,6 +50,7 @@ func main() {
 		log.Fatal("Server Shutdown:", err)
 	}
 
+	fileManager.Stop()
 	router.Close()
 	log.Println("Server exiting")
 }

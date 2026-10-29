@@ -84,6 +84,64 @@ func (s *FileSvr) Upload(sshClient *ssh.Client, dirPath string, files []*multipa
 	return nil
 }
 
+// UploadLocal keeps the existing API for callers that do not need progress.
+func (s *FileSvr) UploadLocal(sshClient *ssh.Client, localPath, remotePath string) error {
+	return s.UploadLocalWithProgress(sshClient, localPath, remotePath, nil)
+}
+
+// UploadLocalWithProgress reports bytes acknowledged by the SFTP writer.
+func (s *FileSvr) UploadLocalWithProgress(sshClient *ssh.Client, localPath, remotePath string, progress func(int64, int64)) error {
+	if !path.IsAbs(remotePath) {
+		return fmt.Errorf("%s is not an absolute path", remotePath)
+	}
+
+	client, err := sftp.NewClient(sshClient)
+	if err != nil {
+		return fmt.Errorf("create SFTP client error: %w", err)
+	}
+	defer client.Close()
+
+	file, err := os.Open(localPath)
+	if err != nil {
+		return fmt.Errorf("open file error: %w", err)
+	}
+	defer file.Close()
+
+	info, err := file.Stat()
+	if err != nil {
+		return fmt.Errorf("stat local file: %w", err)
+	}
+	if !info.Mode().IsRegular() {
+		return fmt.Errorf("not a regular file: %s", localPath)
+	}
+	if progress != nil {
+		progress(0, info.Size())
+	}
+
+	dst, err := client.OpenFile(remotePath, os.O_WRONLY|os.O_CREATE|os.O_EXCL)
+	if err != nil {
+		return fmt.Errorf("create remote file %s error: %w", remotePath, err)
+	}
+
+	var writer io.Writer = dst
+	if progress != nil {
+		writer = &progressWriter{dst: dst, total: info.Size(), report: progress}
+	}
+	_, copyErr := io.Copy(writer, file)
+	closeErr := dst.Close()
+
+	if copyErr != nil {
+		_ = client.Remove(remotePath) // 清理半截文件
+		return fmt.Errorf("write file %s error: %w", remotePath, copyErr)
+	}
+	if closeErr != nil {
+		_ = client.Remove(remotePath)
+		return fmt.Errorf("close remote file %s error: %w", remotePath, closeErr)
+	}
+
+	return nil
+}
+
 func uploadOne(client *sftp.Client, realPath string, file *multipart.FileHeader) error {
 	src, err := file.Open()
 	if err != nil {
@@ -164,4 +222,21 @@ func (s *FileSvr) Download(sshClient *ssh.Client, remotePath, localDir string) e
 		return fmt.Errorf("close local file %s error: %w", localPath, closeErr)
 	}
 	return nil
+}
+
+// progressWriter counts only bytes successfully written, including partial writes.
+type progressWriter struct {
+	dst     io.Writer
+	total   int64
+	written int64
+	report  func(int64, int64)
+}
+
+func (w *progressWriter) Write(p []byte) (int, error) {
+	n, err := w.dst.Write(p)
+	if n > 0 {
+		w.written += int64(n)
+		w.report(w.written, w.total)
+	}
+	return n, err
 }
