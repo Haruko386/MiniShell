@@ -1,6 +1,9 @@
 package service
 
 import (
+	"crypto/hmac"
+	"crypto/sha1"
+	"encoding/base64"
 	"errors"
 	"fmt"
 	"io"
@@ -8,6 +11,7 @@ import (
 	"os"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 
@@ -17,11 +21,16 @@ import (
 	"golang.org/x/crypto/ssh/knownhosts"
 )
 
-var ErrSessionNotFound = errors.New("session not found")
+var (
+	ErrSessionNotFound = errors.New("session not found")
+
+	sftpPoolSize = 4
+)
 
 const (
-	HostKeyModeOnce = "once"
-	HostKeyModeSave = "save"
+	HostKeyModeOnce    = "once"
+	HostKeyModeSave    = "save"
+	HostKeyModeReplace = "replace"
 )
 
 type HostKeyPolicy struct {
@@ -37,6 +46,14 @@ type HostKeyError struct {
 	Fingerprint string
 	Changed     bool
 	Known       []string
+}
+
+func init() {
+	if raw := os.Getenv("MINISHELL_SFTP_POOL_SIZE"); raw != "" {
+		if n, err := strconv.Atoi(raw); err == nil && n >= 1 && n <= 8 {
+			sftpPoolSize = n
+		}
+	}
 }
 
 func (e *HostKeyError) Error() string {
@@ -102,6 +119,83 @@ func appendKnownHost(path, addr string, key ssh.PublicKey) error {
 	return nil
 }
 
+// replaceKnownHost removes saved keys of the same type for addr and appends key.
+func replaceKnownHost(path, addr string, key ssh.PublicKey) error {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return fmt.Errorf("read known_hosts: %w", err)
+	}
+
+	target := knownhosts.Normalize(addr)
+	lines := strings.Split(string(data), "\n")
+	kept := make([]string, 0, len(lines)+1)
+
+	for _, line := range lines {
+		trimmed := strings.TrimSpace(line)
+		if trimmed == "" || strings.HasPrefix(trimmed, "#") {
+			kept = append(kept, line)
+			continue
+		}
+
+		fields := strings.Fields(trimmed)
+		if len(fields) < 3 {
+			kept = append(kept, line)
+			continue
+		}
+		if fields[1] == key.Type() && knownHostPatternMatches(fields[0], target) {
+			continue
+		}
+		kept = append(kept, line)
+	}
+
+	for len(kept) > 0 && strings.TrimSpace(kept[len(kept)-1]) == "" {
+		kept = kept[:len(kept)-1]
+	}
+	kept = append(kept, knownhosts.Line([]string{addr}, key))
+
+	mode := os.FileMode(0600)
+	if info, statErr := os.Stat(path); statErr == nil {
+		mode = info.Mode().Perm()
+	}
+	if err := os.WriteFile(path, []byte(strings.Join(kept, "\n")+"\n"), mode); err != nil {
+		return fmt.Errorf("write known_hosts: %w", err)
+	}
+	return nil
+}
+
+func knownHostPatternMatches(pattern, target string) bool {
+	if strings.HasPrefix(pattern, "|1|") {
+		return hashedHostMatches(pattern, target)
+	}
+
+	for _, candidate := range strings.Split(pattern, ",") {
+		if knownhosts.Normalize(strings.TrimPrefix(candidate, "!")) == target {
+			return true
+		}
+	}
+	return false
+}
+
+func hashedHostMatches(pattern, target string) bool {
+	parts := strings.Split(pattern, "|")
+	if len(parts) != 4 || parts[1] != "1" {
+		return false
+	}
+
+	salt, err := base64.StdEncoding.DecodeString(parts[2])
+	if err != nil {
+		return false
+	}
+	hash, err := base64.StdEncoding.DecodeString(parts[3])
+	if err != nil {
+		return false
+	}
+
+	mac := hmac.New(sha1.New, salt)
+	mac.Write([]byte(target))
+	return hmac.Equal(mac.Sum(nil), hash)
+}
+
 func newHostKeyCallback(host string, port int, path string, policy HostKeyPolicy) (ssh.HostKeyCallback, error) {
 	if err := ensureKnownHostsFile(path); err != nil {
 		return nil, err
@@ -131,11 +225,37 @@ func newHostKeyCallback(host string, port int, path string, policy HostKeyPolicy
 		}
 
 		if len(keyErr.Want) > 0 {
-			info.Changed = true
+			sameType := false
 			for _, known := range keyErr.Want {
-				info.Known = append(info.Known, ssh.FingerprintSHA256(known.Key))
+				if known.Key.Type() == key.Type() {
+					sameType = true
+					break
+				}
 			}
-			return info
+
+			if sameType {
+				info.Changed = true
+				for _, known := range keyErr.Want {
+					info.Known = append(info.Known, ssh.FingerprintSHA256(known.Key))
+				}
+
+				if policy.Mode == HostKeyModeOnce || policy.Mode == HostKeyModeReplace {
+					if policy.Fingerprint == "" || policy.Fingerprint != info.Fingerprint {
+						return fmt.Errorf("host key fingerprint does not match confirmation")
+					}
+				}
+
+				if policy.Mode == HostKeyModeReplace {
+					if err := replaceKnownHost(path, net.JoinHostPort(host, strconv.Itoa(port)), key); err != nil {
+						return fmt.Errorf("replace host key: %w", err)
+					}
+					return nil
+				}
+				if policy.Mode == HostKeyModeOnce {
+					return nil
+				}
+				return info
+			}
 		}
 
 		switch policy.Mode {
@@ -146,7 +266,7 @@ func newHostKeyCallback(host string, port int, path string, policy HostKeyPolicy
 				return fmt.Errorf("host key fingerprint does not match confirmation")
 			}
 			return nil
-		case HostKeyModeSave:
+		case HostKeyModeSave, HostKeyModeReplace:
 			if policy.Fingerprint == "" || policy.Fingerprint != info.Fingerprint {
 				return fmt.Errorf("host key fingerprint does not match confirmation")
 			}
@@ -162,40 +282,101 @@ func newHostKeyCallback(host string, port int, path string, policy HostKeyPolicy
 
 type sshSession struct {
 	client *ssh.Client
-	mu     sync.Mutex
-	sftp   *sftp.Client
+
+	mu          sync.Mutex
+	sftpPool    chan *sftp.Client
+	sftpClients []*sftp.Client
+	closed      chan struct{}
+	closeOnce   sync.Once
 }
 
-func (s *sshSession) sftpClient() (*sftp.Client, error) {
+func (s *sshSession) initSFTPPool() error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	if s.sftp != nil {
-		return s.sftp, nil
+	if s.sftpPool != nil {
+		return nil
 	}
 
-	client, err := sftp.NewClient(s.client,
-		sftp.UseConcurrentWrites(true),
-		sftp.MaxConcurrentRequestsPerFile(sftpConcurrency),
-		sftp.MaxPacket(32768),
-	)
-	if err != nil {
-		return nil, fmt.Errorf("create SFTP client: %w", err)
+	select {
+	case <-s.closed:
+		return errors.New("session closed")
+	default:
 	}
 
-	s.sftp = client
-	return client, nil
+	pool := make(chan *sftp.Client, sftpPoolSize)
+	for i := 0; i < sftpPoolSize; i++ {
+		client, err := sftp.NewClient(s.client,
+			sftp.UseConcurrentWrites(true),
+			sftp.MaxConcurrentRequestsPerFile(sftpConcurrency),
+			sftp.MaxPacket(32768),
+		)
+		if err != nil {
+			for _, created := range s.sftpClients {
+				_ = created.Close()
+			}
+			s.sftpClients = nil
+			return fmt.Errorf("create SFTP client %d: %w", i+1, err)
+		}
+
+		s.sftpClients = append(s.sftpClients, client)
+		pool <- client
+	}
+
+	s.sftpPool = pool
+	return nil
+}
+
+func (s *sshSession) acquireSFTP() (*sftp.Client, func(), error) {
+	if err := s.initSFTPPool(); err != nil {
+		return nil, nil, err
+	}
+
+	s.mu.Lock()
+	pool := s.sftpPool
+	s.mu.Unlock()
+
+	if pool == nil {
+		return nil, nil, errors.New("session closed")
+	}
+
+	select {
+	case client := <-pool:
+		release := func() {
+			s.mu.Lock()
+			current := s.sftpPool
+			s.mu.Unlock()
+
+			if current == nil {
+				return
+			}
+
+			select {
+			case current <- client:
+			default:
+			}
+		}
+		return client, release, nil
+	case <-s.closed:
+		return nil, nil, errors.New("session closed")
+	}
 }
 
 func (s *sshSession) close() error {
+	s.closeOnce.Do(func() {
+		close(s.closed)
+	})
+
 	s.mu.Lock()
-	sftpClient := s.sftp
-	s.sftp = nil
+	s.sftpPool = nil
+	clients := s.sftpClients
+	s.sftpClients = nil
 	s.mu.Unlock()
 
-	if sftpClient != nil {
-		_ = sftpClient.Close()
+	for _, client := range clients {
+		_ = client.Close()
 	}
+
 	return s.client.Close()
 }
 
@@ -270,7 +451,10 @@ func (s *SessionSvr) Connect(host, username, password string, port int, policy H
 	id := common.GenerateUUID()
 
 	s.Mu.Lock()
-	s.sessions[id] = &sshSession{client: client}
+	s.sessions[id] = &sshSession{
+		client: client,
+		closed: make(chan struct{}),
+	}
 	s.Mu.Unlock()
 
 	return id, nil
@@ -305,15 +489,15 @@ func (s *SessionSvr) Get(id string) (*ssh.Client, bool) {
 	return sess.client, true
 }
 
-func (s *SessionSvr) GetSFTP(id string) (*sftp.Client, error) {
+func (s *SessionSvr) AcquireSFTP(id string) (*sftp.Client, func(), error) {
 	s.Mu.Lock()
 	sess, ok := s.sessions[id]
 	s.Mu.Unlock()
 
 	if !ok {
-		return nil, ErrSessionNotFound
+		return nil, nil, ErrSessionNotFound
 	}
-	return sess.sftpClient()
+	return sess.acquireSFTP()
 }
 
 func (s *SessionSvr) CloseAll() {

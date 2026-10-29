@@ -60,7 +60,7 @@ func (h *SessionHandler) Connect(c *gin.Context) {
 		})
 		return
 
-	case req.HostKeyMode != "" && req.HostKeyMode != service.HostKeyModeOnce && req.HostKeyMode != service.HostKeyModeSave:
+	case req.HostKeyMode != "" && req.HostKeyMode != service.HostKeyModeOnce && req.HostKeyMode != service.HostKeyModeSave && req.HostKeyMode != service.HostKeyModeReplace:
 		c.JSON(http.StatusBadRequest, gin.H{
 			"message": "invalid host key mode",
 		})
