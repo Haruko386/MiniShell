@@ -7,6 +7,9 @@ import './style.css'
 type Connection = { id: string; name: string; host: string; port: number; username: string; password?: string }
 type Entry = { name: string; type: 'file' | 'directory'; size: number; modifiedAt: string }
 type Transfer = { name: string; progress: number; status: string }
+type UploadJob = { file: File; path: string }
+type HostKeyInfo = { host: string; port: number; keyType: string; fingerprint: string; changed: boolean; known: string[] }
+type ApiError = Error & { status?: number; data?: { message?: string; hostKey?: HostKeyInfo } }
 const key = 'minishell.connections.v1'
 let connections: Connection[] = JSON.parse(localStorage.getItem(key) || '[]')
 let selected = connections[0]?.id || ''
@@ -20,7 +23,7 @@ const esc = (s: unknown) => String(s).replace(/[&<>"']/g, c => ({
     '"': '&quot;',
     "'": '&#39;'
 }[c]!))
-app.innerHTML = `<aside class="sidebar"><div class="brand"><div class="brand-mark">${icon('terminal', 19)}</div><div><strong>MiniShell</strong><span>SSH WORKSPACE</span></div></div><div class="side-heading"><span>连接</span><button class="icon-button" id="add" title="新建连接">${icon('plus', 17)}</button></div><div class="connection-list" id="connections"></div><div class="side-footer">${icon('shield-check', 15)} <span>连接配置保存在本地</span></div></aside><main><header class="topbar"><div class="breadcrumbs"><span>工作区</span>${icon('chevron-right', 14)}<strong id="crumb">未连接</strong></div><div class="top-status"><span class="status-dot"></span><span id="status">未连接</span></div></header><section class="workspace"><div id="quick-connect" class="quick-connect"><div class="quick-list"><div class="quick-heading"><span>快速连接</span><button id="quick-add" class="button secondary" type="button">新建连接</button></div><div id="quick-rows"></div></div></div><div class="workspace-heading"><div><div class="eyebrow">WORKSPACE <span>/</span> SSH</div><h1 id="title">你的远程工作区</h1><p id="subtitle">选择一个连接，开始使用终端和文件管理。</p></div><div class="heading-actions"><button class="button secondary hidden" id="disconnect">${icon('unplug')} 断开连接</button><button class="button primary" id="connect">${icon('plug', 16)} 连接服务器</button></div></div><div class="panels"><section class="terminal-panel"><div class="panel-header terminal-header"><div class="panel-title"><span class="terminal-icon">${icon('terminal', 15)}</span><strong>终端</strong><span class="panel-label">TERMINAL</span></div><span id="terminal-state" class="terminal-state"><span></span> 未连接</span></div><div class="terminal-wrap"><div id="terminal"></div><div id="terminal-empty" class="terminal-empty"><div class="empty-terminal-icon">${icon('terminal', 25)}</div><strong>准备就绪，等待连接</strong><p>连接服务器后，在这里输入命令。</p></div></div><div class="terminal-footer"><span>SSH TERMINAL</span><span id="terminal-target">未建立会话</span></div></section><section class="files-panel"><div class="panel-header file-header"><div class="panel-title"><span class="folder-icon">${icon('folder', 16)}</span><strong>远程文件</strong><span class="panel-label">FILES</span></div><div class="file-actions"><button class="icon-button" id="up" title="上一级">${icon('arrow-up', 16)}</button><button class="icon-button" id="refresh" title="刷新">${icon('refresh-cw', 15)}</button><button class="button upload-button" id="choose">${icon('upload', 15)} 上传文件</button><input id="file-input" type="file" multiple hidden></div></div><div class="path-bar"><span>路径</span><form id="path-form"><span class="path-icon">${icon('folder-open', 15)}</span><input id="path" value="/" aria-label="远程路径" spellcheck="false"><button title="前往路径">${icon('arrow-right', 15)}</button></form><span class="path-hint">Enter 前往</span></div><div class="file-body" id="dropzone"><div class="table-head"><span>名称</span><span>大小</span><span>修改时间</span></div><div id="file-list" class="file-list"></div><div id="file-empty" class="file-empty"><div class="empty-folder">${icon('folder-open', 25)}</div><strong>连接后查看远程文件</strong><p>也可以将文件拖到此区域上传</p></div><div class="drop-overlay">${icon('upload-cloud', 30)}<strong>松开以上传文件</strong><span>文件将上传至当前目录</span></div></div><div class="files-footer"><span id="file-count">等待连接</span><span>${icon('mouse-pointer-2', 13)} 拖放文件到此区域上传</span></div></section></div><div class="transfer-bar"><div><span class="transfer-icon">${icon('arrow-up-down', 15)}</span><strong>传输队列</strong><span id="transfer-summary">暂无传输任务</span></div><button id="toggle-transfers" class="icon-button" title="展开传输队列">${icon('chevron-up', 16)}</button></div><div id="transfers" class="transfers hidden"></div></section></main><dialog id="connection-dialog"><form id="connection-form" class="dialog-content"><div class="dialog-heading"><div><div class="eyebrow">CONNECTION</div><h2 id="dialog-title">新建连接</h2><p>填写服务器信息，保存后可随时连接。</p></div><button type="button" class="icon-button" id="close-dialog">${icon('x', 19)}</button></div><label>连接名称<input name="name" required placeholder="例如：我的服务器" maxlength="80"></label><div class="form-row"><label>主机地址<input name="host" required placeholder="IP 地址或域名"></label><label>端口<input name="port" type="number" min="1" max="65535" required value="22"></label></div><label>用户名<input name="username" required placeholder="例如：root"></label><label>密码<input name="password" type="password" required autocomplete="current-password" placeholder="输入 SSH 密码"></label><p class="form-note">${icon('shield-check', 15)} 密码会明文保存在此浏览器中。</p><div class="dialog-actions"><button type="button" class="button secondary" id="cancel-dialog">取消</button><button class="button primary">保存连接</button></div></form></dialog><div id="toast" role="status"></div>`
+app.innerHTML = `<aside class="sidebar"><div class="brand"><div class="brand-mark">${icon('terminal', 19)}</div><div><strong>MiniShell</strong><span>SSH WORKSPACE</span></div></div><div class="side-heading"><span>连接</span><button class="icon-button" id="add" title="新建连接">${icon('plus', 17)}</button></div><div class="connection-list" id="connections"></div><div class="side-footer">${icon('shield-check', 15)} <span>连接配置保存在本地</span></div></aside><main><header class="topbar"><div class="breadcrumbs"><span>工作区</span>${icon('chevron-right', 14)}<strong id="crumb">未连接</strong></div><div class="top-status"><span class="status-dot"></span><span id="status">未连接</span></div></header><section class="workspace"><div id="quick-connect" class="quick-connect"><div class="quick-list"><div class="quick-heading"><span>快速连接</span><button id="quick-add" class="button secondary" type="button">新建连接</button></div><div id="quick-rows"></div></div></div><div class="workspace-heading"><div><div class="eyebrow">WORKSPACE <span>/</span> SSH</div><h1 id="title">你的远程工作区</h1><p id="subtitle">选择一个连接，开始使用终端和文件管理。</p></div><div class="heading-actions"><button class="button secondary hidden" id="disconnect">${icon('unplug')} 断开连接</button><button class="button primary" id="connect">${icon('plug', 16)} 连接服务器</button></div></div><div class="panels"><section class="terminal-panel"><div class="panel-header terminal-header"><div class="panel-title"><span class="terminal-icon">${icon('terminal', 15)}</span><strong>终端</strong><span class="panel-label">TERMINAL</span></div><span id="terminal-state" class="terminal-state"><span></span> 未连接</span></div><div class="terminal-wrap"><div id="terminal"></div><div id="terminal-empty" class="terminal-empty"><div class="empty-terminal-icon">${icon('terminal', 25)}</div><strong>准备就绪，等待连接</strong><p>连接服务器后，在这里输入命令。</p></div></div><div class="terminal-footer"><span>SSH TERMINAL</span><span id="terminal-target">未建立会话</span></div></section><section class="files-panel"><div class="panel-header file-header"><div class="panel-title"><span class="folder-icon">${icon('folder', 16)}</span><strong>远程文件</strong><span class="panel-label">FILES</span></div><div class="file-actions"><button class="icon-button" id="up" title="上一级">${icon('arrow-up', 16)}</button><button class="icon-button" id="refresh" title="刷新">${icon('refresh-cw', 15)}</button><button class="button upload-button" id="choose">${icon('upload', 15)} 上传文件</button><button class="button upload-button" id="choose-folder">${icon('folder-up', 15)} 上传文件夹</button><input id="file-input" type="file" multiple hidden><input id="folder-input" type="file" webkitdirectory multiple hidden></div></div><div class="path-bar"><span>路径</span><form id="path-form"><span class="path-icon">${icon('folder-open', 15)}</span><input id="path" value="/" aria-label="远程路径" spellcheck="false"><button title="前往路径">${icon('arrow-right', 15)}</button></form><span class="path-hint">Enter 前往</span></div><div class="file-body" id="dropzone"><div class="table-head"><span>名称</span><span>大小</span><span>修改时间</span></div><div id="file-list" class="file-list"></div><div id="file-empty" class="file-empty"><div class="empty-folder">${icon('folder-open', 25)}</div><strong>连接后查看远程文件</strong><p>也可以将文件或文件夹拖到此区域上传</p></div><div class="drop-overlay">${icon('upload-cloud', 30)}<strong>松开以上传文件或文件夹</strong><span>内容将上传至当前目录</span></div></div><div class="files-footer"><span id="file-count">等待连接</span><span>${icon('mouse-pointer-2', 13)} 拖放文件或文件夹到此区域上传</span></div></section></div><div class="transfer-bar"><div><span class="transfer-icon">${icon('arrow-up-down', 15)}</span><strong>传输队列</strong><span id="transfer-summary">暂无传输任务</span></div><button id="toggle-transfers" class="icon-button" title="展开传输队列">${icon('chevron-up', 16)}</button></div><div id="transfers" class="transfers hidden"></div></section></main><dialog id="connection-dialog"><form id="connection-form" class="dialog-content"><div class="dialog-heading"><div><div class="eyebrow">CONNECTION</div><h2 id="dialog-title">新建连接</h2><p>填写服务器信息，保存后可随时连接。</p></div><button type="button" class="icon-button" id="close-dialog">${icon('x', 19)}</button></div><label>连接名称<input name="name" required placeholder="例如：我的服务器" maxlength="80"></label><div class="form-row"><label>主机地址<input name="host" required placeholder="IP 地址或域名"></label><label>端口<input name="port" type="number" min="1" max="65535" required value="22"></label></div><label>用户名<input name="username" required placeholder="例如：root"></label><label>密码<input name="password" type="password" required autocomplete="current-password" placeholder="输入 SSH 密码"></label><p class="form-note">${icon('shield-check', 15)} 密码会明文保存在此浏览器中。</p><div class="dialog-actions"><button type="button" class="button secondary" id="cancel-dialog">取消</button><button class="button primary">保存连接</button></div></form></dialog><div id="toast" role="status"></div>`
 const $ = <T extends HTMLElement>(s: string) => document.querySelector<T>(s)!
 const iconsRefresh = () => createIcons({icons})
 const terminal = new Terminal({
@@ -167,13 +170,58 @@ async function api(url: string, init?: RequestInit) {
     const response = await fetch(url, init);
     if (!response.ok) {
         let message = `请求失败 (${response.status})`;
+        let data: ApiError['data'];
         try {
-            message = (await response.json()).message || message
+            data = await response.json();
+            message = data?.message || message
         } catch {
         }
-        throw new Error(message)
+        const error = new Error(message) as ApiError;
+        error.status = response.status;
+        error.data = data;
+        throw error
     }
     return response
+}
+
+function askHostKey(info: HostKeyInfo) {
+    return new Promise<'once' | 'save' | null>(resolve => {
+        const dialog = document.createElement('dialog');
+        dialog.innerHTML = `<form method="dialog" class="dialog-content"><div class="dialog-heading"><div><div class="eyebrow">HOST KEY</div><h2>首次连接</h2><p>${esc(info.host)}:${info.port}</p></div></div><p class="form-note">密钥类型：${esc(info.keyType)}</p><p class="form-note">指纹：${esc(info.fingerprint)}</p><div class="dialog-actions"><button class="button secondary" value="cancel">取消</button><button class="button secondary" value="once">仅本次</button><button class="button primary" value="save">永久保存</button></div></form>`;
+        document.body.appendChild(dialog);
+        dialog.addEventListener('close', () => {
+            const value = dialog.returnValue;
+            dialog.remove();
+            resolve(value === 'once' || value === 'save' ? value : null)
+        }, {once: true});
+        dialog.showModal()
+    })
+}
+
+async function createSession(body: Record<string, unknown>) {
+    try {
+        const response = await api('/api/sessions', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify(body)
+        });
+        return await response.json()
+    } catch (err) {
+        const apiErr = err as ApiError;
+        const info = apiErr.data?.hostKey;
+        if (apiErr.status !== 409 || !info) throw err;
+        if (info.changed) {
+            throw new Error(`主机密钥已变化。当前指纹：${info.fingerprint}；已保存：${(info.known || []).join('、') || '无'}`)
+        }
+        const mode = await askHostKey(info);
+        if (!mode) throw new Error('已取消连接');
+        const response = await api('/api/sessions', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({...body, hostKeyMode: mode, hostKeyFingerprint: info.fingerprint})
+        });
+        return await response.json()
+    }
 }
 
 $('#quick-add').onclick = () => openEditor();
@@ -204,12 +252,7 @@ async function connect() {
     connecting = true;
     try {
         const password = c.password;
-        const response = await api('/api/sessions', {
-            method: 'POST',
-            headers: {'Content-Type': 'application/json'},
-            body: JSON.stringify({host: c.host, port: c.port, username: c.username, password})
-        });
-        const result = await response.json();
+        const result = await createSession({host: c.host, port: c.port, username: c.username, password});
         if (!result.id) throw new Error('服务端未返回会话 ID');
         session = result.id;
         setConnected(true);
@@ -294,9 +337,9 @@ function size(n: number) {
 }
 
 function renderFiles() {
-    $('#file-list').innerHTML = entries.map(f => `<div class="file-row ${f.type === 'directory' ? 'directory' : ''}" data-name="${esc(f.name)}" data-type="${esc(f.type)}"><span class="file-name">${icon(f.type === 'directory' ? 'folder' : 'file', 16)} ${esc(f.name)} ${f.type === 'file' ? `<button class="file-download icon-button" data-download title="下载文件" aria-label="下载 ${esc(f.name)}">${icon('download', 14)}</button>` : ''}</span><span>${f.type === 'directory' ? '—' : size(f.size)}</span><span>${f.modifiedAt ? esc(new Date(f.modifiedAt).toLocaleString('zh-CN')) : '—'}</span></div>`).join('');
+    $('#file-list').innerHTML = entries.map(f => `<div class="file-row ${f.type === 'directory' ? 'directory' : ''}" data-name="${esc(f.name)}" data-type="${esc(f.type)}"><span class="file-name">${icon(f.type === 'directory' ? 'folder' : 'file', 16)} ${esc(f.name)} <button class="file-download icon-button" data-download title="${f.type === 'directory' ? '下载文件夹' : '下载文件'}" aria-label="下载 ${esc(f.name)}">${icon('download', 14)}</button></span><span>${f.type === 'directory' ? '—' : size(f.size)}</span><span>${f.modifiedAt ? esc(new Date(f.modifiedAt).toLocaleString('zh-CN')) : '—'}</span></div>`).join('');
     $('#file-empty').classList.toggle('hidden', !!entries.length);
-    $('#file-empty').innerHTML = session ? `<div class="empty-folder">${icon('folder-open', 25)}</div><strong>这个文件夹是空的</strong><p>将文件拖到此区域，上传至当前目录</p>` : `<div class="empty-folder">${icon('folder-open', 25)}</div><strong>连接后查看远程文件</strong><p>也可以将文件拖到此区域上传</p>`;
+    $('#file-empty').innerHTML = session ? `<div class="empty-folder">${icon('folder-open', 25)}</div><strong>这个文件夹是空的</strong><p>将文件或文件夹拖到此区域，上传至当前目录</p>` : `<div class="empty-folder">${icon('folder-open', 25)}</div><strong>连接后查看远程文件</strong><p>也可以将文件或文件夹拖到此区域上传</p>`;
     $('#file-count').textContent = session ? `${entries.length} 个项目` : '等待连接';
     iconsRefresh()
 }
@@ -306,10 +349,10 @@ $('#file-list').onclick = e => {
     const button = target.closest<HTMLElement>('[data-download]');
     if (!button) return;
     const row = button.closest<HTMLElement>('.file-row');
-    if (row?.dataset.name) void downloadFile(row.dataset.name)
+    if (row?.dataset.name) void downloadEntry(row.dataset.name)
 }
 
-async function downloadFile(name: string) {
+async function downloadEntry(name: string) {
     if (!session) {
         toast('请先连接服务器');
         return
@@ -357,13 +400,62 @@ $('#choose').onclick = () => {
     }
     $<HTMLInputElement>('#file-input').click()
 };
+$('#choose-folder').onclick = () => {
+    if (!session) {
+        toast('请先连接服务器');
+        return
+    }
+    $<HTMLInputElement>('#folder-input').click()
+};
 $('#file-input').onchange = e => {
     const input = e.target as HTMLInputElement;
-    upload(Array.from(input.files || []));
+    upload(Array.from(input.files || []).map(file => ({file, path: file.name})));
+    input.value = ''
+}
+$('#folder-input').onchange = e => {
+    const input = e.target as HTMLInputElement;
+    upload(Array.from(input.files || []).map(file => ({file, path: file.webkitRelativePath || file.name})));
     input.value = ''
 }
 const drop = $('#dropzone');
 let drag = 0;
+
+// Read dropped entries recursively so folder uploads keep their structure.
+function readEntry(entry: FileSystemEntry): Promise<UploadJob[]> {
+    if (entry.isFile) {
+        return new Promise((resolve, reject) => {
+            (entry as FileSystemFileEntry).file(
+                file => resolve([{file, path: entry.fullPath.replace(/^\//, '')}]),
+                reject
+            )
+        })
+    }
+
+    if (!entry.isDirectory) return Promise.resolve([]);
+
+    const reader = (entry as FileSystemDirectoryEntry).createReader();
+    const readBatch = () => new Promise<FileSystemEntry[]>((resolve, reject) => reader.readEntries(resolve, reject));
+    return (async () => {
+        const jobs: UploadJob[] = [];
+        let batch = await readBatch();
+        while (batch.length) {
+            for (const child of batch) jobs.push(...await readEntry(child));
+            batch = await readBatch()
+        }
+        return jobs
+    })()
+}
+
+async function readDrop(data: DataTransfer) {
+    const roots = Array.from(data.items)
+        .map(item => item.webkitGetAsEntry?.())
+        .filter((entry): entry is FileSystemEntry => !!entry);
+    if (!roots.length) return Array.from(data.files).map(file => ({file, path: file.name}));
+    const jobs: UploadJob[] = [];
+    for (const root of roots) jobs.push(...await readEntry(root));
+    return jobs
+}
+
 drop.ondragenter = e => {
     e.preventDefault();
     drag++;
@@ -377,15 +469,16 @@ drop.ondragleave = e => {
         drop.classList.remove('dragging')
     }
 };
-drop.ondrop = e => {
+drop.ondrop = async e => {
     e.preventDefault();
     drag = 0;
     drop.classList.remove('dragging');
-    if (Array.from(e.dataTransfer?.items || []).some(item => item.webkitGetAsEntry?.()?.isDirectory)) {
-        toast('暂不支持上传文件夹，请选择文件');
-        return
+    if (!e.dataTransfer) return;
+    try {
+        upload(await readDrop(e.dataTransfer))
+    } catch {
+        toast('读取拖放内容失败')
     }
-    upload(Array.from(e.dataTransfer?.files || []))
 }
 
 function renderTransfers() {
@@ -397,51 +490,52 @@ function renderTransfers() {
 
 $('#toggle-transfers').onclick = () => $('#transfers').classList.toggle('hidden')
 
-async function upload(files: File[]) {
+async function upload(jobs: UploadJob[]) {
     if (!session) {
         toast('请先连接服务器');
         return
     }
-    if (!files.length) return;
+    if (!jobs.length) return;
     const sid = session, path = currentPath;
-    const jobs = files.map(file => ({file, transfer: {name: file.name, progress: 0, status: '等待中'}}));
-    transfers.push(...jobs.map(j => j.transfer));
+    const queue = jobs.map(job => ({job, transfer: {name: job.path, progress: 0, status: '等待中'}}));
+    transfers.push(...queue.map(item => item.transfer));
     $('#transfers').classList.remove('hidden');
     renderTransfers();
     let next = 0;
 
     async function worker() {
-        while (next < jobs.length) {
-            const job = jobs[next++];
-            job.transfer.status = '上传中';
+        while (next < queue.length) {
+            const item = queue[next++];
+            item.transfer.status = '上传中';
             renderTransfers();
             await new Promise<void>(resolve => {
                 const xhr = new XMLHttpRequest();
                 xhr.open('POST', `/api/sessions/${encodeURIComponent(sid)}/files?path=${encodeURIComponent(path)}`);
                 xhr.upload.onprogress = e => {
                     if (e.lengthComputable) {
-                        job.transfer.progress = Math.round(e.loaded / e.total * 100);
+                        item.transfer.progress = Math.round(e.loaded / e.total * 100);
                         renderTransfers()
                     }
                 };
                 xhr.onload = () => {
-                    job.transfer.status = xhr.status >= 200 && xhr.status < 300 ? '完成' : `失败 (${xhr.status})`;
+                    item.transfer.status = xhr.status >= 200 && xhr.status < 300 ? '完成' : `失败 (${xhr.status})`;
                     renderTransfers();
                     resolve()
                 };
                 xhr.onerror = () => {
-                    job.transfer.status = '网络错误';
+                    item.transfer.status = '网络错误';
                     renderTransfers();
                     resolve()
                 };
                 const form = new FormData();
-                form.append('file', job.file);
+                form.append('file', item.job.file);
+                form.append('relative', item.job.path);
                 xhr.send(form)
             })
         }
     }
 
-    await Promise.all(Array.from({length: Math.min(3, jobs.length)}, worker));
+    await Promise.all(Array.from({length: Math.min(3, queue.length)}, worker));
     if (session === sid && currentPath === path) loadFiles(path)
 }
 
