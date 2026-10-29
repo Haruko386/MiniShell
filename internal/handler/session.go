@@ -1,6 +1,7 @@
 package handler
 
 import (
+	"errors"
 	"net/http"
 	"strings"
 
@@ -58,10 +59,46 @@ func (h *SessionHandler) Connect(c *gin.Context) {
 			"message": "invalid request Port",
 		})
 		return
+
+	case req.HostKeyMode != "" && req.HostKeyMode != service.HostKeyModeOnce && req.HostKeyMode != service.HostKeyModeSave:
+		c.JSON(http.StatusBadRequest, gin.H{
+			"message": "invalid host key mode",
+		})
+		return
+
+	case req.HostKeyMode != "" && req.HostKeyFingerprint == "":
+		c.JSON(http.StatusBadRequest, gin.H{
+			"message": "host key fingerprint is required",
+		})
+		return
 	}
 
-	id, err := h.sessionSvr.Connect(req.Host, req.Username, req.Password, req.Port)
+	id, err := h.sessionSvr.Connect(req.Host, req.Username, req.Password, req.Port, service.HostKeyPolicy{
+		Mode:        req.HostKeyMode,
+		Fingerprint: req.HostKeyFingerprint,
+	})
 	if err != nil {
+		var hostKeyErr *service.HostKeyError
+		if errors.As(err, &hostKeyErr) {
+			known := hostKeyErr.Known
+			if known == nil {
+				known = []string{}
+			}
+
+			c.JSON(http.StatusConflict, gin.H{
+				"message": hostKeyErr.Error(),
+				"hostKey": gin.H{
+					"host":        hostKeyErr.Host,
+					"port":        hostKeyErr.Port,
+					"keyType":     hostKeyErr.KeyType,
+					"fingerprint": hostKeyErr.Fingerprint,
+					"changed":     hostKeyErr.Changed,
+					"known":       known,
+				},
+			})
+			return
+		}
+
 		c.JSON(http.StatusBadGateway, gin.H{
 			"message": "ssh connection error: " + err.Error(),
 		})

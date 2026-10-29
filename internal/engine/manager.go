@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"path"
 	"sync"
 
 	"github.com/Haruko386/MiniShell/internal/common"
@@ -150,16 +151,24 @@ func (m *Manager) worker(id int) {
 }
 
 func (m *Manager) work(task entity.Task) error {
-	sshClient, ok := m.SessionSvr.Get(task.SessionID)
-	if !ok {
-		return fmt.Errorf("session %s not found", task.SessionID)
+	sftpClient, err := m.SessionSvr.GetSFTP(task.SessionID)
+	if err != nil {
+		return fmt.Errorf("session %s: %w", task.SessionID, err)
 	}
 
 	switch task.Direction {
 	case "upload":
-		return m.FileSvr.UploadLocalWithProgress(sshClient, task.LocalPath, task.RemotePath, func(done, total int64) { m.updateProgress(task.ID, done, total) })
+		base := task.RemoteBase
+		if base == "" {
+			base = path.Dir(task.RemotePath)
+		}
+		var snapshot *service.SourceSnapshot
+		if task.VerifySource {
+			snapshot = &service.SourceSnapshot{Size: task.SourceSize, ModTime: task.SourceModTime}
+		}
+		return m.FileSvr.UploadLocalChecked(sftpClient, task.LocalPath, task.RemotePath, base, snapshot, func(done, total int64) { m.updateProgress(task.ID, done, total) })
 	case "download":
-		return m.FileSvr.Download(sshClient, task.RemotePath, task.LocalPath)
+		return m.FileSvr.Download(sftpClient, task.RemotePath, task.LocalPath)
 	default:
 		return fmt.Errorf("unsupported direction: %s", task.Direction)
 	}

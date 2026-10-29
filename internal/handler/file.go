@@ -1,6 +1,7 @@
 package handler
 
 import (
+	"errors"
 	"net/http"
 	"strings"
 
@@ -37,15 +38,19 @@ func (h *FileHandler) List(c *gin.Context) {
 		return
 	}
 
-	sshClient, ok := h.sessionSvr.Get(id)
-	if !ok {
-		c.JSON(http.StatusNotFound, gin.H{
-			"message": "session not found",
+	sftpClient, err := h.sessionSvr.GetSFTP(id)
+	if err != nil {
+		status := http.StatusBadGateway
+		if errors.Is(err, service.ErrSessionNotFound) {
+			status = http.StatusNotFound
+		}
+		c.JSON(status, gin.H{
+			"message": err.Error(),
 		})
 		return
 	}
 
-	realPath, entries, err := h.fileSvr.List(sshClient, dirPath)
+	realPath, entries, err := h.fileSvr.List(sftpClient, dirPath)
 	if err != nil {
 		c.JSON(http.StatusBadGateway, gin.H{
 			"message": "list remote files error: " + err.Error(),
@@ -76,10 +81,14 @@ func (h *FileHandler) Upload(c *gin.Context) {
 		return
 	}
 
-	sshClient, ok := h.sessionSvr.Get(id)
-	if !ok {
-		c.JSON(http.StatusNotFound, gin.H{
-			"message": "session not found",
+	sftpClient, err := h.sessionSvr.GetSFTP(id)
+	if err != nil {
+		status := http.StatusBadGateway
+		if errors.Is(err, service.ErrSessionNotFound) {
+			status = http.StatusNotFound
+		}
+		c.JSON(status, gin.H{
+			"message": err.Error(),
 		})
 		return
 	}
@@ -100,7 +109,29 @@ func (h *FileHandler) Upload(c *gin.Context) {
 		return
 	}
 
-	if err := h.fileSvr.Upload(sshClient, dirPath, files); err != nil {
+	relativePaths := form.Value["relative"]
+	if len(relativePaths) != 0 && len(relativePaths) != len(files) {
+		c.JSON(http.StatusBadRequest, gin.H{
+			"message": "file and relative path count mismatch",
+		})
+		return
+	}
+
+	uploads := make([]service.UploadFile, 0, len(files))
+
+	for i, file := range files {
+		relative := ""
+		if len(relativePaths) == len(files) {
+			relative = relativePaths[i] // keep the folder structure chosen by the client
+		}
+
+		uploads = append(uploads, service.UploadFile{
+			Header:   file,
+			Relative: relative,
+		})
+	}
+
+	if err := h.fileSvr.Upload(sftpClient, dirPath, uploads); err != nil {
 		c.JSON(http.StatusBadGateway, gin.H{
 			"message": err.Error(),
 		})
@@ -135,15 +166,19 @@ func (h *FileHandler) Download(c *gin.Context) {
 		return
 	}
 
-	sshClient, ok := h.sessionSvr.Get(id)
-	if !ok {
-		c.JSON(http.StatusNotFound, gin.H{
-			"message": "session not found",
+	sftpClient, err := h.sessionSvr.GetSFTP(id)
+	if err != nil {
+		status := http.StatusBadGateway
+		if errors.Is(err, service.ErrSessionNotFound) {
+			status = http.StatusNotFound
+		}
+		c.JSON(status, gin.H{
+			"message": err.Error(),
 		})
 		return
 	}
 
-	if err := h.fileSvr.Download(sshClient, dirPath, localPath); err != nil {
+	if err := h.fileSvr.Download(sftpClient, dirPath, localPath); err != nil {
 		c.JSON(http.StatusBadGateway, gin.H{
 			"message": err.Error(),
 		})
