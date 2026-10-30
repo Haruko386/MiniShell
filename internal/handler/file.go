@@ -1,10 +1,12 @@
 package handler
 
 import (
+	"context"
 	"errors"
 	"net/http"
 	"path"
 	"strings"
+	"time"
 
 	"github.com/Haruko386/MiniShell/internal/service"
 	"github.com/gin-gonic/gin"
@@ -189,22 +191,21 @@ func (h *FileHandler) Preview(c *gin.Context) {
 		return
 	}
 
-	sftpClient, release, err := h.sessionSvr.AcquireSFTP(id)
+	ctx, cancel := context.WithTimeout(c.Request.Context(), 30*time.Second)
+	defer cancel()
+	data, err := h.sessionSvr.PreviewImage(ctx, id, imgPath, h.fileSvr)
 	if err != nil {
 		status := http.StatusBadGateway
 		if errors.Is(err, service.ErrSessionNotFound) {
 			status = http.StatusNotFound
 		}
+		if errors.Is(err, context.DeadlineExceeded) {
+			status = http.StatusGatewayTimeout
+		}
+		if errors.Is(err, context.Canceled) {
+			return
+		}
 		c.JSON(status, gin.H{
-			"message": err.Error(),
-		})
-		return
-	}
-	defer release()
-
-	data, err := h.fileSvr.PreviewImg(sftpClient, imgPath)
-	if err != nil {
-		c.JSON(http.StatusBadGateway, gin.H{
 			"message": err.Error(),
 		})
 		return
