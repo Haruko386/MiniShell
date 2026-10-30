@@ -65,6 +65,31 @@ func (h *FileHandler) List(c *gin.Context) {
 	})
 }
 
+func (h *FileHandler) Delete(c *gin.Context) {
+	remotePath := c.Query("path")
+	if remotePath == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"message": "invalid request path"})
+		return
+	}
+
+	client, release, err := h.sessionSvr.AcquireSFTP(c.Param("id"))
+	if err != nil {
+		status := http.StatusBadGateway
+		if errors.Is(err, service.ErrSessionNotFound) {
+			status = http.StatusNotFound
+		}
+		c.JSON(status, gin.H{"message": err.Error()})
+		return
+	}
+
+	defer release()
+	if err := h.fileSvr.Delete(client, remotePath); err != nil {
+		c.JSON(http.StatusBadGateway, gin.H{"message": err.Error()})
+		return
+	}
+	c.Status(http.StatusNoContent)
+}
+
 func (h *FileHandler) Upload(c *gin.Context) {
 	id := strings.TrimSpace(c.Param("id"))
 	if id == "" {
