@@ -57,6 +57,12 @@ jobs:
       - name: Check go.mod
         run: go mod tidy -diff
 
+      - name: Prepare embedded frontend directory
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force frontend/dist | Out-Null
+          Set-Content -Path frontend/dist/index.html -Value '<!doctype html><title>CI</title>'
+
       - name: Vet
         run: go vet ./...
 
