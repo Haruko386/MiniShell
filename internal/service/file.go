@@ -22,6 +22,43 @@ func NewFileSvr() *FileSvr {
 	return &FileSvr{}
 }
 
+// Delete removes a non-directory entry without following symbolic links.
+func (s *FileSvr) Delete(client *sftp.Client, remotePath string) error {
+	if !path.IsAbs(remotePath) || path.Clean(remotePath) == "/" {
+		return fmt.Errorf("invalid remote file path")
+	}
+
+	cleanPath := path.Clean(remotePath)
+	if cleanPath == "/" || cleanPath != remotePath {
+		return fmt.Errorf("invalid remote file path")
+	}
+
+	info, err := client.Lstat(remotePath)
+	if err != nil {
+		return err
+	}
+	if !info.IsDir() {
+		return client.Remove(remotePath)
+	}
+
+	children, err := client.ReadDir(remotePath)
+	if err != nil {
+		return fmt.Errorf("read recursively: %w", err)
+	}
+
+	for _, child := range children {
+		childPath := path.Join(remotePath, child.Name())
+		if err = s.Delete(client, childPath); err != nil {
+			return fmt.Errorf("delete file %s: %w", childPath, err)
+		}
+	}
+
+	if err = client.RemoveDirectory(remotePath); err != nil {
+		return fmt.Errorf("remove directory %s failed: %w", remotePath, err)
+	}
+	return nil
+}
+
 var sftpConcurrency = 128
 
 func init() {
