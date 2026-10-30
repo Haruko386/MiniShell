@@ -73,6 +73,9 @@ let sideOpen = true
 let connectionsOpen = true
 let filesOpen = true
 const app = document.querySelector<HTMLDivElement>('#app')!
+window.addEventListener('wheel', event => {
+    if (event.ctrlKey) event.preventDefault()
+}, {passive: false})
 const icon = (name: string, size = 15) => `<i data-lucide="${name}" width="${size}" height="${size}"></i>`
 const paintIcons = () => createIcons({icons, attrs: {width: '15', height: '15'}})
 const esc = (s: unknown) => String(s).replace(/[&<>"']/g, c => ({
@@ -605,8 +608,83 @@ selectionBox.className = 'selection-box hidden'
 document.body.appendChild(selectionBox)
 const fileMenu = document.createElement('div')
 fileMenu.className = 'file-context-menu hidden'
-fileMenu.innerHTML = '<button data-action="download">下载选中项</button><button data-action="delete">删除选中项</button>'
+fileMenu.innerHTML = '<button data-action="preview">预览图片</button><button data-action="download">下载选中项</button><button data-action="delete">删除选中项</button>'
 document.body.appendChild(fileMenu)
+const previewDialog = document.createElement('dialog')
+previewDialog.className = 'image-preview'
+previewDialog.innerHTML = '<div class="image-preview-header"><strong></strong><button type="button" class="icon-button" aria-label="关闭预览">×</button></div><div class="image-preview-body"><span class="image-preview-message" role="status"></span><img class="hidden" alt=""></div>'
+document.body.appendChild(previewDialog)
+const previewTitle = previewDialog.querySelector<HTMLElement>('strong')!
+const previewMessage = previewDialog.querySelector<HTMLElement>('.image-preview-message')!
+const previewImage = previewDialog.querySelector<HTMLImageElement>('img')!
+let previewURL = ''
+let previewRequest: AbortController | undefined
+const isPreviewImage = (entry: Entry) => entry.type === 'file' && /\.(jpe?g|png|gif|webp|bmp)$/i.test(entry.name)
+function clearPreview() {
+    previewRequest?.abort(); previewRequest = undefined
+    previewImage.removeAttribute('src'); previewImage.classList.add('hidden')
+    if (previewURL) URL.revokeObjectURL(previewURL)
+    previewURL = ''
+}
+previewDialog.querySelector('button')!.onclick = () => previewDialog.close()
+previewDialog.addEventListener('close', clearPreview)
+const previewHeader = previewDialog.querySelector<HTMLElement>('.image-preview-header')!
+function keepPreviewVisible(left: number, top: number) {
+    const width = previewDialog.offsetWidth, height = previewDialog.offsetHeight
+    previewDialog.style.left = `${Math.max(0, Math.min(left, window.innerWidth - width))}px`
+    previewDialog.style.top = `${Math.max(0, Math.min(top, window.innerHeight - height))}px`
+}
+previewHeader.addEventListener('pointerdown', event => {
+    if (event.button !== 0 || (event.target as HTMLElement).closest('button')) return
+    event.preventDefault()
+    const rect = previewDialog.getBoundingClientRect()
+    const offsetX = event.clientX - rect.left, offsetY = event.clientY - rect.top
+    previewHeader.setPointerCapture(event.pointerId)
+    const move = (e: PointerEvent) => keepPreviewVisible(e.clientX - offsetX, e.clientY - offsetY)
+    const finish = () => {
+        previewHeader.removeEventListener('pointermove', move)
+        previewHeader.removeEventListener('pointerup', finish)
+        previewHeader.removeEventListener('pointercancel', finish)
+        previewHeader.removeEventListener('lostpointercapture', finish)
+    }
+    previewHeader.addEventListener('pointermove', move)
+    previewHeader.addEventListener('pointerup', finish)
+    previewHeader.addEventListener('pointercancel', finish)
+    previewHeader.addEventListener('lostpointercapture', finish)
+})
+window.addEventListener('resize', () => {
+    if (previewDialog.open) { const rect = previewDialog.getBoundingClientRect(); keepPreviewVisible(rect.left, rect.top) }
+})
+previewDialog.addEventListener('keydown', event => { if (event.key === 'Escape') previewDialog.close() })
+async function previewFile(name: string) {
+    if (!session) return
+    clearPreview()
+    const controller = new AbortController()
+    previewRequest = controller
+    const sid = session, remotePath = joinPath(currentPath, name)
+    previewTitle.textContent = name
+    previewImage.alt = name
+    previewMessage.textContent = '正在加载图片…'
+    previewMessage.classList.remove('hidden')
+    if (!previewDialog.open) {
+        previewDialog.show()
+        if (!previewDialog.style.left) keepPreviewVisible(window.innerWidth - previewDialog.offsetWidth - 16, 16)
+        else { const rect = previewDialog.getBoundingClientRect(); keepPreviewVisible(rect.left, rect.top) }
+    }
+    try {
+        const response = await api(`/api/sessions/${encodeURIComponent(sid)}/preview?path=${encodeURIComponent(remotePath)}`, {signal: controller.signal})
+        const blob = await response.blob()
+        if (controller.signal.aborted) return
+        if (!/^image\/(jpeg|png|gif|webp|bmp)$/i.test(blob.type)) throw new Error('服务器未返回支持的图片格式')
+        previewURL = URL.createObjectURL(blob)
+        previewImage.onload = () => { previewMessage.classList.add('hidden') }
+        previewImage.onerror = () => { previewImage.classList.add('hidden'); previewMessage.textContent = '图片无法显示' }
+        previewImage.src = previewURL
+        previewImage.classList.remove('hidden')
+    } catch (err) {
+        if (!controller.signal.aborted) previewMessage.textContent = `预览失败：${err instanceof Error ? err.message : String(err)}`
+    }
+}
 let suppressFileClick = false
 $('#file-list').addEventListener('pointerdown', e => {
     if (e.button !== 0 || (e.target as HTMLElement).closest('[data-download]')) return
@@ -656,6 +734,8 @@ $('#file-list').oncontextmenu = e => {
         selectedFiles.add(row.dataset.name);
         renderFiles(false)
     }
+    const previewEntries = entries.filter(f => selectedFiles.has(f.name))
+    $<HTMLButtonElement>('[data-action="preview"]').disabled = previewEntries.length !== 1 || !isPreviewImage(previewEntries[0])
     fileMenu.classList.remove('hidden')
     fileMenu.style.left = `${Math.min(e.clientX, window.innerWidth - fileMenu.offsetWidth)}px`
     fileMenu.style.top = `${Math.min(e.clientY, window.innerHeight - fileMenu.offsetHeight)}px`
@@ -666,6 +746,11 @@ document.addEventListener('pointerdown', e => {
 fileMenu.onclick = async e => {
     const action = (e.target as HTMLElement).closest<HTMLElement>('[data-action]')?.dataset.action
     fileMenu.classList.add('hidden')
+    if (action === 'preview') {
+        const entry = entries.find(f => selectedFiles.has(f.name))
+        if (selectedFiles.size === 1 && entry && isPreviewImage(entry)) void previewFile(entry.name)
+        return
+    }
     if (action === 'download') {
         void downloadSelected();
         return
@@ -715,6 +800,7 @@ $('#file-list').ondblclick = e => {
     if ((e.target as HTMLElement).closest('[data-download]')) return
     const row = (e.target as HTMLElement).closest<HTMLElement>('.file-row')
     if (row?.dataset.type === 'directory' && row.dataset.name) void loadFiles(joinPath(currentPath, row.dataset.name))
+    else if (row?.dataset.name) { const entry = entries.find(f => f.name === row.dataset.name); if (entry && isPreviewImage(entry)) void previewFile(entry.name) }
 }
 $('#up').onclick = () => void loadFiles(parentPath(currentPath))
 $('#refresh').onclick = () => void loadFiles(currentPath)

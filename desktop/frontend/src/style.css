@@ -429,6 +429,14 @@ dialog {
 
 dialog::backdrop { background: #1f232980; }
 
+dialog.image-preview { position: fixed; z-index: 100; margin: 0; width: min(480px, calc(100% - 32px)); max-width: none; height: min(400px, calc(100% - 32px)); max-height: none; }
+.image-preview[open] { display: flex; flex-direction: column; }
+.image-preview-header { flex: none; display: flex; align-items: center; gap: 12px; padding: 8px 12px; border-bottom: 1px solid #e2e4e9; cursor: move; user-select: none; touch-action: none; }
+.image-preview-header strong { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.image-preview-body { flex: 1; min-height: 0; display: flex; align-items: center; justify-content: center; padding: 12px; overflow: auto; background: #f3f4f6; }
+.image-preview-body img { max-width: 100%; max-height: 100%; object-fit: contain; }
+.image-preview-message { color: #6b7280; text-align: center; }
+
 .dialog-content { padding: 18px; }
 
 .dialog-heading { display: flex; justify-content: space-between; align-items: flex-start; }

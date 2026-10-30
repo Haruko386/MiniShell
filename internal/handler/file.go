@@ -3,6 +3,7 @@ package handler
 import (
 	"errors"
 	"net/http"
+	"path"
 	"strings"
 
 	"github.com/Haruko386/MiniShell/internal/service"
@@ -21,6 +22,7 @@ func NewFileHandler(sessionSvr *service.SessionSvr, fileSvr *service.FileSvr) *F
 	}
 }
 
+// List all files in remote server
 func (h *FileHandler) List(c *gin.Context) {
 	id := strings.TrimSpace(c.Param("id"))
 	if id == "" {
@@ -90,6 +92,7 @@ func (h *FileHandler) Delete(c *gin.Context) {
 	c.Status(http.StatusNoContent)
 }
 
+// Upload the file
 func (h *FileHandler) Upload(c *gin.Context) {
 	id := strings.TrimSpace(c.Param("id"))
 	if id == "" {
@@ -168,6 +171,67 @@ func (h *FileHandler) Upload(c *gin.Context) {
 	c.Status(http.StatusOK)
 }
 
+// Preview the image
+func (h *FileHandler) Preview(c *gin.Context) {
+	id := strings.TrimSpace(c.Param("id"))
+	if id == "" {
+		c.JSON(http.StatusBadRequest, gin.H{
+			"message": "invalid  request id",
+		})
+		return
+	}
+
+	imgPath := c.Query("path")
+	if imgPath == "" {
+		c.JSON(http.StatusBadRequest, gin.H{
+			"message": "invalid request path",
+		})
+		return
+	}
+
+	sftpClient, release, err := h.sessionSvr.AcquireSFTP(id)
+	if err != nil {
+		status := http.StatusBadGateway
+		if errors.Is(err, service.ErrSessionNotFound) {
+			status = http.StatusNotFound
+		}
+		c.JSON(status, gin.H{
+			"message": err.Error(),
+		})
+		return
+	}
+	defer release()
+
+	data, err := h.fileSvr.PreviewImg(sftpClient, imgPath)
+	if err != nil {
+		c.JSON(http.StatusBadGateway, gin.H{
+			"message": err.Error(),
+		})
+		return
+	}
+
+	contentType := http.DetectContentType(data)
+	if contentType == "application/octet-stream" {
+		ext := strings.ToLower(path.Ext(imgPath))
+		switch ext {
+		case ".jpg", ".jpeg":
+			contentType = "image/jpeg"
+		case ".png":
+			contentType = "image/png"
+		case ".gif":
+			contentType = "image/gif"
+		case ".webp":
+			contentType = "image/webp"
+		case ".bmp":
+			contentType = "image/bmp"
+		default:
+			contentType = "application/octet-stream"
+		}
+	}
+	c.Data(http.StatusOK, contentType, data)
+}
+
+// Download the files or dir from remote
 func (h *FileHandler) Download(c *gin.Context) {
 	id := strings.TrimSpace(c.Param("id"))
 	if id == "" {
