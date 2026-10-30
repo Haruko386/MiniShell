@@ -1,0 +1,5 @@
+{
+  "name": "minishell-tests",
+  "private": true,
+  "type": "module"
+}

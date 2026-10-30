@@ -38,6 +38,7 @@ import {Terminal} from '@xterm/xterm'
 import {FitAddon} from '@xterm/addon-fit'
 import '@xterm/xterm/css/xterm.css'
 import {createIcons, icons} from 'lucide'
+import {joinPath, parentPath, parts} from './path'
 import './style.css'
 
 type Connection = { id: string; name: string; host: string; port: number; username: string; password?: string }
@@ -171,22 +172,6 @@ function save() {
 
 function active() {
     return connections.find(c => c.id === selected)
-}
-
-function parentPath(path: string) {
-    return path.replace(/\/+$/, '').replace(/\/[^/]*$/, '') || '/'
-}
-
-function joinPath(dir: string, name: string) {
-    return `${dir.replace(/\/$/, '')}/${name}`
-}
-
-function parts(path: string) {
-    const names = path.split('/').filter(Boolean)
-    return [{label: '/', path: '/'}, ...names.map((label, index) => ({
-        label,
-        path: '/' + names.slice(0, index + 1).join('/')
-    }))]
 }
 
 function renderConnections() {
