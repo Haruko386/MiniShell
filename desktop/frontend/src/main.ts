@@ -284,12 +284,15 @@ function renderPath() {
     if (editingPath) { $<HTMLInputElement>('#path').value = currentPath; $<HTMLInputElement>('#path').focus(); return }
     $('#crumb-bar').innerHTML = parts(currentPath).map((part, index) => `${index ? '<span>/</span>' : ''}<button type="button" data-path="${esc(part.path)}">${esc(part.label)}</button>`).join('')
 }
-function renderFiles() {
+function renderFiles(rebuildList = true) {
     renderPath()
-    $('#file-list').innerHTML = entries.map(f => {
+    if (rebuildList) $('#file-list').innerHTML = entries.map(f => {
         const meta = f.type === 'directory' ? '目录' : `${size(f.size)} · ${when(f.modifiedAt)}`
         return `<div class="file-row ${f.type === 'directory' ? 'directory' : ''} ${selectedFiles.has(f.name) ? 'selected' : ''}" data-name="${esc(f.name)}" data-type="${esc(f.type)}" title="${esc(f.name)}&#10;${esc(meta)}">${icon(f.type === 'directory' ? 'folder' : 'file')}<span class="file-name"><span>${esc(f.name)}</span></span><button class="file-download icon-button" data-download title="${f.type === 'directory' ? '下载文件夹' : '下载'}" aria-label="下载 ${esc(f.name)}">${icon('download', 14)}</button></div>`
     }).join('')
+    else $('#file-list').querySelectorAll<HTMLElement>('.file-row').forEach(row => {
+        row.classList.toggle('selected', selectedFiles.has(row.dataset.name ?? ''))
+    })
     $('#file-empty').classList.toggle('hidden', !session || !!entries.length)
     $('#file-empty').innerHTML = `<strong>这个文件夹是空的</strong><p>将文件或文件夹拖到此区域，上传至当前目录</p>`
     $<HTMLButtonElement>('#download-selected').disabled = selectedFiles.size === 0
@@ -320,7 +323,7 @@ $('#file-list').onclick = e => {
         else selectedFiles.add(row.dataset.name)
         selectionAnchor = index
     } else { selectedFiles.clear(); selectionAnchor = index }
-    renderFiles()
+    renderFiles(false)
 }
 $('#file-list').ondblclick = e => {
     if ((e.target as HTMLElement).closest('[data-download]')) return
