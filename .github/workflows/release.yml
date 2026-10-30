@@ -1,0 +1,86 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    name: Build and publish release
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: desktop/frontend/package-lock.json
+
+      - name: Build desktop frontend
+        working-directory: desktop/frontend
+        run: |
+          npm ci
+          npm run build
+
+      - name: Install Wails
+        run: go install github.com/wailsapp/wails/v2/cmd/wails@v2.11.0
+
+      - name: Build desktop app
+        working-directory: desktop
+        shell: pwsh
+        run: wails build -clean -platform windows/amd64 -o MiniShell.exe
+
+      - name: Build server binaries
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force dist | Out-Null
+          $env:CGO_ENABLED = "0"
+
+          $env:GOOS = "windows"
+          $env:GOARCH = "amd64"
+          go build -trimpath -ldflags="-s -w" -o dist/minishell-windows-amd64.exe .
+
+          $env:GOOS = "linux"
+          $env:GOARCH = "amd64"
+          go build -trimpath -ldflags="-s -w" -o dist/minishell-linux-amd64 .
+
+          $env:GOOS = "linux"
+          $env:GOARCH = "arm64"
+          go build -trimpath -ldflags="-s -w" -o dist/minishell-linux-arm64 .
+
+          $env:GOOS = "darwin"
+          $env:GOARCH = "amd64"
+          go build -trimpath -ldflags="-s -w" -o dist/minishell-darwin-amd64 .
+
+          $env:GOOS = "darwin"
+          $env:GOARCH = "arm64"
+          go build -trimpath -ldflags="-s -w" -o dist/minishell-darwin-arm64 .
+
+      - name: Package desktop app
+        shell: pwsh
+        run: Compress-Archive -Path desktop/build/bin/MiniShell.exe -DestinationPath dist/MiniShell-windows-amd64.zip -Force
+
+      - name: Publish release
+        uses: softprops/action-gh-release@v2
+        with:
+          name: ${{ github.ref_name }}
+          generate_release_notes: true
+          files: |
+            dist/MiniShell-windows-amd64.zip
+            dist/minishell-windows-amd64.exe
+            dist/minishell-linux-amd64
+            dist/minishell-linux-arm64
+            dist/minishell-darwin-amd64
+            dist/minishell-darwin-arm64
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
