@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 	"mime/multipart"
+	"net/http"
 	"os"
 	"path"
 	"path/filepath"
@@ -20,6 +21,43 @@ type FileSvr struct{}
 
 func NewFileSvr() *FileSvr {
 	return &FileSvr{}
+}
+
+// Delete removes a non-directory entry without following symbolic links.
+func (s *FileSvr) Delete(client *sftp.Client, remotePath string) error {
+	if !path.IsAbs(remotePath) || path.Clean(remotePath) == "/" {
+		return fmt.Errorf("invalid remote file path")
+	}
+
+	cleanPath := path.Clean(remotePath)
+	if cleanPath == "/" || cleanPath != remotePath {
+		return fmt.Errorf("invalid remote file path")
+	}
+
+	info, err := client.Lstat(remotePath)
+	if err != nil {
+		return err
+	}
+	if !info.IsDir() {
+		return client.Remove(remotePath)
+	}
+
+	children, err := client.ReadDir(remotePath)
+	if err != nil {
+		return fmt.Errorf("read recursively: %w", err)
+	}
+
+	for _, child := range children {
+		childPath := path.Join(remotePath, child.Name())
+		if err = s.Delete(client, childPath); err != nil {
+			return fmt.Errorf("delete file %s: %w", childPath, err)
+		}
+	}
+
+	if err = client.RemoveDirectory(remotePath); err != nil {
+		return fmt.Errorf("remove directory %s failed: %w", remotePath, err)
+	}
+	return nil
 }
 
 var sftpConcurrency = 128
@@ -289,6 +327,82 @@ func (s *FileSvr) MkdirAll(client *sftp.Client, base string, dirPaths []string) 
 		}
 	}
 	return nil
+}
+
+// PreviewImg preview the image
+func (s *FileSvr) PreviewImg(client *sftp.Client, imgPath string) ([]byte, error) {
+	if !path.IsAbs(imgPath) {
+		return nil, fmt.Errorf("%s is not an absolute path", imgPath)
+	}
+
+	realPath, err := client.RealPath(imgPath)
+	if err != nil {
+		return nil, fmt.Errorf("resolve remote path %s: %w", imgPath, err)
+	}
+
+	stat, err := client.Lstat(realPath)
+	if err != nil {
+		return nil, fmt.Errorf("stat remote path %s: %w", realPath, err)
+	}
+	if stat.IsDir() {
+		return nil, fmt.Errorf("remote path should be a file(image) instead of a directory: %s", realPath)
+	}
+
+	imgSize := stat.Size()
+	if imgSize > 16777216 { // 16MB
+		return nil, fmt.Errorf("remote file size is too big: %d, please download it to local", imgSize)
+	}
+
+	ext := strings.ToLower(path.Ext(imgPath))
+	switch ext {
+	case ".jpg", ".jpeg", ".png", ".gif", ".bmp", ".webp":
+	default:
+		return nil, fmt.Errorf("unsupported file type: %s", ext)
+	}
+
+	img, err := client.Open(realPath)
+	if err != nil {
+		return nil, fmt.Errorf("open remote file %s: %w", realPath, err)
+	}
+	defer img.Close()
+
+	head := make([]byte, 512)
+	n, err := io.ReadAtLeast(img, head, 1)
+	if err != nil {
+		if errors.Is(err, io.EOF) {
+			return nil, fmt.Errorf("remote file %s is empty", realPath)
+		}
+		if !errors.Is(err, io.ErrUnexpectedEOF) {
+			return nil, fmt.Errorf("read remote file header %s: %w", realPath, err)
+		}
+	}
+	if n == 0 {
+		return nil, fmt.Errorf("remote file %s is empty", realPath)
+	}
+	head = head[:n]
+
+	// detect MIME type
+	mimeType := http.DetectContentType(head)
+	if !strings.HasPrefix(mimeType, "image/") {
+		return nil, fmt.Errorf("file is not a valid image, detected type: %s", mimeType)
+	}
+
+	if _, err := img.Seek(0, io.SeekStart); err != nil {
+		return nil, fmt.Errorf("seek remote file %s: %w", realPath, err)
+	}
+
+	// read the file
+	reader := io.LimitReader(img, 16777216+1)
+	data, err := io.ReadAll(reader)
+	if err != nil {
+		return nil, fmt.Errorf("read remote file %s: %w", realPath, err)
+	}
+
+	if len(data) > 16777216 {
+		return nil, fmt.Errorf("remote file size is too big: %d", len(data))
+	}
+
+	return data, nil
 }
 
 func (s *FileSvr) Download(client *sftp.Client, remotePath, localDir string) error {

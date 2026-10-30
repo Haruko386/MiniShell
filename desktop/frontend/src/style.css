@@ -30,6 +30,12 @@ button:focus-visible, input:focus-visible { outline: 2px solid #2563eb; outline-
     background: #fff;
     border-bottom: 1px solid #e2e4e9;
 }
+.topbar { display: none; }
+#connection-count { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.side-tabs { display: flex; flex-wrap: wrap; gap: 4px; padding: 2px 4px 4px 20px; }
+.side-tab { display: flex; border-radius: 4px; background: #eef1f5; }
+.side-tab.active { background: #e3edf9; color: #1e40af; }
+.side-tab button { border: 0; background: transparent; color: inherit; cursor: pointer; padding: 3px 5px; }
 
 .logo { width: 22px; height: 22px; display: grid; place-items: center; color: #2563eb; flex: none; }
 
@@ -48,7 +54,7 @@ button:focus-visible, input:focus-visible { outline: 2px solid #2563eb; outline-
 
 .top-status { display: flex; align-items: center; gap: 6px; color: #6b7280; font-size: 12px; }
 
-.status-dot { width: 7px; height: 7px; border-radius: 50%; background: #9ca3af; }
+.status-dot { width: 7px; height: 7px; flex: 0 0 7px; border-radius: 50%; background: #9ca3af; }
 
 .top-status.online .status-dot { background: #16a34a; }
 
@@ -205,6 +211,9 @@ button:focus-visible, input:focus-visible { outline: 2px solid #2563eb; outline-
 
 .danger { color: #dc2626; }
 
+.path-row { height: 36px; flex: none; display: flex; align-items: center; border-bottom: 1px solid #e2e4e9; padding: 0 8px; }
+.path-row .crumb { flex: 1; min-width: 0; height: 100%; padding: 0; border: 0; }
+.path-row #up { flex: none; }
 .crumb { color: #6b7280; font-size: 12px; overflow: hidden; }
 
 .crumb button { max-width: 88px; border: 0; background: none; color: #2563eb; padding: 0; }
@@ -224,6 +233,11 @@ button:focus-visible, input:focus-visible { outline: 2px solid #2563eb; outline-
 .file-tools { justify-content: flex-end; }
 
 #dropzone { position: relative; flex: 1; min-height: 0; display: flex; flex-direction: column; }
+.selection-box { position: fixed; z-index: 1000; pointer-events: none; border: 1px solid #2563eb; background: rgba(37, 99, 235, .15); }
+.file-context-menu { position: fixed; z-index: 1001; min-width: 140px; padding: 4px; border: 1px solid #d1d5db; border-radius: 6px; background: white; box-shadow: 0 4px 16px #0002; }
+.file-context-menu button { display: block; width: 100%; text-align: left; border: 0; border-radius: 4px; background: transparent; padding: 7px 10px; }
+.file-context-menu button:hover { background: #e3edf9; }
+.file-list { user-select: none; }
 
 .file-row > svg:first-child, .transfer-row > svg:first-child { color: #6b7280; }
 .file-row.directory > svg:first-child { color: #d4a017; }
@@ -415,6 +429,14 @@ dialog {
 
 dialog::backdrop { background: #1f232980; }
 
+dialog.image-preview { position: fixed; z-index: 100; margin: 0; width: min(480px, calc(100% - 32px)); max-width: none; height: min(400px, calc(100% - 32px)); max-height: none; }
+.image-preview[open] { display: flex; flex-direction: column; }
+.image-preview-header { flex: none; display: flex; align-items: center; gap: 12px; padding: 8px 12px; border-bottom: 1px solid #e2e4e9; cursor: move; user-select: none; touch-action: none; }
+.image-preview-header strong { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.image-preview-body { flex: 1; min-height: 0; display: flex; align-items: center; justify-content: center; padding: 12px; overflow: auto; background: #f3f4f6; }
+.image-preview-body img { max-width: 100%; max-height: 100%; object-fit: contain; }
+.image-preview-message { color: #6b7280; text-align: center; }
+
 .dialog-content { padding: 18px; }
 
 .dialog-heading { display: flex; justify-content: space-between; align-items: flex-start; }
@@ -467,3 +489,10 @@ dialog::backdrop { background: #1f232980; }
     .session-copy small { display: none; }
     .connection-edit, .connection-delete, .file-download { opacity: 1; }
 }
+
+#tabs { display: flex; min-width: 0; overflow-x: auto; gap: 4px; }
+.terminal-tab { display: flex; align-items: center; border: 1px solid #e2e8f0; border-radius: 4px; background: #f4f6f9; color: #475569; }
+.terminal-tab.active { background: #e3edf9; border-color: #bfdbfe; color: #1e40af; }
+.terminal-tab button { border: 0; background: transparent; color: inherit; padding: 6px 8px; cursor: pointer; white-space: nowrap; }
+.terminal-tab button:hover { color: #2563eb; }
+.terminal-instance { height: 100%; }

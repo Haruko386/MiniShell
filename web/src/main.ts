@@ -2,6 +2,7 @@ import {Terminal} from '@xterm/xterm'
 import {FitAddon} from '@xterm/addon-fit'
 import '@xterm/xterm/css/xterm.css'
 import {createIcons, icons} from 'lucide'
+import {joinPath, parentPath, parts} from './path'
 import './style.css'
 
 type Connection = { id: string; name: string; host: string; port: number; username: string; password?: string }

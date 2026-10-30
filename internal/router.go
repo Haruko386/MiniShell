@@ -38,8 +38,10 @@ func (r *Router) Setup(e *gin.Engine) {
 			sessions.DELETE("/:id", r.sessionHandler.Close)
 			sessions.GET("/:id/terminal", r.sessionHandler.Terminal)
 			sessions.GET("/:id/files", r.fileHandler.List)
+			sessions.DELETE("/:id/files", r.fileHandler.Delete)
 			sessions.POST("/:id/files", r.fileHandler.Upload)
 			sessions.GET("/:id/download", r.fileHandler.Download)
+			sessions.GET("/:id/preview", r.fileHandler.Preview)
 		}
 	}
 }
