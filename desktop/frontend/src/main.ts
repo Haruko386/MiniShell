@@ -73,6 +73,19 @@ let sideWidth = 264
 let sideOpen = true
 let connectionsOpen = true
 let filesOpen = true
+const kaomoji = [
+    '(＾▽＾)', '(￣▽￣)', '(・∀・)', '(°∀°)', '(´∀｀)', '(＾ω＾)',
+    '(๑•̀ㅂ•́)و✧', '(ง •̀_•́)ง', '(๑•́ ₃ •̀๑)', '(｡•́︿•̀｡)',
+    '(；´Д｀)', '(´；ω；｀)', '(￣^￣)ゞ', '(⌒‿⌒)', '(◕‿◕)',
+    '(｡◕‿◕｡)', '(๑˃̵ᴗ˂̵)', '(≧▽≦)', '(>_<)', '(T_T)',
+    '(ToT)', '(Q_Q)', '(¬_¬)', '(￣ー￣)', '(￣▽￣)ノ',
+    '(＾▽＾)／', 'ヽ(・∀・)ﾉ', 'ヾ(≧▽≦*)o', '(￣ω￣)', '(´･ω･`)',
+    '(´・ω・`)', '( •_•)>⌐■-■', '(⌐■_■)', '(☞ﾟヮﾟ)☞', '☜(ﾟヮﾟ☜)',
+    '(╯°□°）╯︵ ┻━┻', '┬─┬ノ( º _ ºノ)', '(ヘ･_･)ヘ┳━┳', '(づ｡◕‿‿◕｡)づ', '(っ˘ω˘ς )',
+    '(￣▽￣)ゞ', '(ー_ー)', '(=_=)', '(#^.^#)', '(^_^)',
+    '(^o^)', '(^ω^)', '(￣ε￣)', '(￣3￣)', '(づ￣ 3￣)づ'
+]
+const randomKaomoji = () => kaomoji[Math.floor(Math.random() * kaomoji.length)]
 const app = document.querySelector<HTMLDivElement>('#app')!
 window.addEventListener('wheel', event => {
     if (event.ctrlKey) event.preventDefault()
@@ -87,14 +100,18 @@ const esc = (s: unknown) => String(s).replace(/[&<>"']/g, c => ({
     "'": '&#39;'
 }[c]!))
 
-app.innerHTML = `<header class="topbar"><span class="logo">${icon('terminal')}</span><strong class="tab-label" id="crumb">新标签页</strong><span class="spacer"></span><button class="icon-button" id="theme" type="button" title="主题"></button><span class="top-status"><span class="status-dot"></span><span id="status">未连接</span></span></header><div class="shell"><button class="dock hidden" id="open-side" type="button" title="展开左侧">${icon('panel-left')}</button><aside class="sidebar" id="sidebar"><div class="side-resize" id="side-resize" title="拖动调整宽度，拖到最左收起"></div><div class="side-heading"><button class="icon-button" id="toggle-connections" title="收起连接">${icon('chevron-down')}</button><span id="connection-count">连接</span><button class="icon-button" id="add" title="新建连接">${icon('plus')}</button></div><div class="connection-list" id="connections"></div><div id="file-pane" class="hidden"><div class="side-heading"><button class="icon-button" id="toggle-files" title="收起文件">${icon('chevron-down')}</button><span class="file-heading" id="file-heading">文件</span><span class="heading-tools"><button class="icon-button" id="new-file" title="新建文件">${icon('file-plus')}</button><button class="icon-button" id="new-folder" title="新建目录">${icon('folder-plus')}</button><button class="icon-button" id="refresh" title="刷新">${icon('refresh-cw')}</button></span></div><div id="file-body"><div class="path-row"><div class="crumb" id="crumb-bar"></div><form class="path-edit hidden" id="path-form"><input id="path" aria-label="远程路径" spellcheck="false"></form><button class="icon-button" id="up" title="上一级">${icon('arrow-up')}</button></div><div id="dropzone"><div class="file-list" id="file-list"></div><div id="file-empty" class="file-empty"></div><div class="drop-overlay">${icon('upload', 22)}<strong>松开以上传文件或文件夹</strong></div></div><div class="side-footer"><span id="file-count">等待连接</span><span id="file-meta"></span></div></div></aside><main class="main"><section class="welcome" id="welcome"><div class="welcome-card"><span class="logo">${icon('server', 18)}</span><h1 id="welcome-title">选择一台服务器</h1><p id="welcome-copy">单击连接。一次只能保持一个会话。</p><div id="quick-rows"></div></div></section><section class="terminal-pane hidden" id="terminal-pane"><div id="terminal"></div></section></main><aside class="transfer-rail hidden" id="transfer-rail"><button class="icon-button" id="toggle-transfers" title="传输队列">${icon('arrow-up-down')}</button><span class="badge hidden" id="transfer-badge"></span></aside><aside class="queue hidden" id="queue"><div class="queue-resize" id="queue-resize" title="拖动调整宽度，双击收起"></div><div class="queue-head"><span id="transfer-summary">传输</span><span><button class="button" id="clear-done" type="button">清空完成</button><button class="icon-button" id="close-queue" title="收起">${icon('x')}</button></span></div><div class="transfers" id="transfers"></div></aside></div><dialog id="connection-dialog"><form id="connection-form" class="dialog-content"><div class="dialog-heading"><div><h2 id="dialog-title">新建连接</h2><p>填写服务器信息，保存后可随时连接。</p></div><button type="button" class="icon-button" id="close-dialog">${icon('x')}</button></div><label>连接名称<input name="name" required placeholder="例如：我的服务器" maxlength="80"></label><div class="form-row"><label>主机地址<input name="host" required placeholder="IP 地址或域名"></label><label>端口<input name="port" type="number" min="1" max="65535" required value="22"></label></div><label>用户名<input name="username" required placeholder="例如：root"></label><label>密码<input name="password" type="password" required autocomplete="current-password" placeholder="输入 SSH 密码"></label><p class="form-note">${icon('shield-alert')} 密码会明文保存在此浏览器中。</p><div class="dialog-actions"><button type="button" class="button" id="cancel-dialog">取消</button><button class="button primary">保存连接</button></div></form></dialog><div id="toast" role="status"></div>`
+app.innerHTML = `<header class="topbar"><span class="logo">${icon('terminal')}</span><strong class="tab-label" id="crumb">新标签页</strong><span class="spacer"></span><button class="icon-button" id="theme" type="button" title="主题"></button><span class="top-status"><span class="status-dot"></span><span id="status">未连接</span></span></header><div class="shell"><button class="dock hidden" id="open-side" type="button" title="展开左侧">${icon('panel-left')}</button><aside class="sidebar" id="sidebar"><div class="side-resize" id="side-resize" title="拖动调整宽度，拖到最左收起"></div><div class="side-heading"><button class="icon-button" id="toggle-connections" title="收起连接">${icon('chevron-down')}</button><span id="connection-count">连接</span><button class="icon-button" id="add" title="新建连接">${icon('plus')}</button></div><div class="connection-list" id="connections"></div><div id="file-pane" class="hidden"><div class="side-heading"><button class="icon-button" id="toggle-files" title="收起文件">${icon('chevron-down')}</button><span class="file-heading" id="file-heading">文件</span><span class="heading-tools"><button class="icon-button" id="new-file" title="新建文件">${icon('file-plus')}</button><button class="icon-button" id="new-folder" title="新建目录">${icon('folder-plus')}</button><button class="icon-button" id="refresh" title="刷新">${icon('refresh-cw')}</button></span></div><div id="file-body"><div class="path-row"><div class="crumb" id="crumb-bar"></div><form class="path-edit hidden" id="path-form"><input id="path" aria-label="远程路径" spellcheck="false"></form><button class="icon-button" id="up" title="上一级">${icon('arrow-up')}</button></div><div id="dropzone"><div class="file-list" id="file-list"></div><div id="file-empty" class="file-empty"></div><div class="drop-overlay">${icon('upload', 22)}<strong>松开以上传文件或文件夹</strong></div></div><div class="side-footer"><span id="file-count">等待连接</span><span id="file-meta"></span></div></div></aside><main class="main"><section class="welcome" id="welcome"><div class="welcome-card"><div class="welcome-face" id="welcome-face"></div><div id="quick-rows"></div></div></section><section class="terminal-pane hidden" id="terminal-pane"><div id="terminal"></div></section></main><aside class="transfer-rail hidden" id="transfer-rail"><button class="icon-button" id="toggle-transfers" title="传输队列">${icon('arrow-up-down')}</button><span class="badge hidden" id="transfer-badge"></span></aside><aside class="queue hidden" id="queue"><div class="queue-resize" id="queue-resize" title="拖动调整宽度，双击收起"></div><div class="queue-head"><span id="transfer-summary">传输</span><span><button class="button" id="clear-done" type="button">清空完成</button><button class="icon-button" id="close-queue" title="收起">${icon('x')}</button></span></div><div class="transfers" id="transfers"></div></aside></div><dialog id="connection-dialog"><form id="connection-form" class="dialog-content"><div class="dialog-heading"><div><h2 id="dialog-title">新建连接</h2></div><button type="button" class="icon-button" id="close-dialog">${icon('x')}</button></div><label>连接名称<input name="name" required placeholder="server" maxlength="80"></label><div class="form-row"><label>主机地址<input name="host" required placeholder="172.0.0.1"></label><label>端口<input name="port" type="number" min="1" max="65535" required value="22"></label></div><label>用户名<input name="username" required placeholder="root"></label><label>密码<input name="password" type="password" required autocomplete="current-password" placeholder="password"></label><div class="dialog-actions"><button type="button" class="button" id="cancel-dialog">取消</button><button class="button primary">保存连接</button></div></form></dialog><div id="toast" role="status"></div>`
 
 const $ = <T extends HTMLElement>(s: string) => document.querySelector<T>(s)!
 type ThemeChoice = 'system' | 'light' | 'dark'
 const themeKey = 'minishell.theme'
 const themeQuery = window.matchMedia('(prefers-color-scheme: dark)')
 let themeChoice: ThemeChoice = (localStorage.getItem(themeKey) as ThemeChoice) || 'system'
-function themeDark() { return themeChoice === 'dark' || (themeChoice === 'system' && themeQuery.matches) }
+
+function themeDark() {
+    return themeChoice === 'dark' || (themeChoice === 'system' && themeQuery.matches)
+}
+
 function applyTheme() {
     document.documentElement.dataset.theme = themeDark() ? 'dark' : 'light'
     document.documentElement.dataset.themeChoice = themeChoice
@@ -102,12 +119,15 @@ function applyTheme() {
     $('#theme').title = themeChoice === 'dark' ? '深色，点击切换为跟随系统' : themeChoice === 'light' ? '浅色，点击切换为深色' : '跟随系统，点击切换为浅色'
     paintIcons()
 }
+
 $('#theme').onclick = () => {
     themeChoice = themeChoice === 'system' ? 'light' : themeChoice === 'light' ? 'dark' : 'system'
     localStorage.setItem(themeKey, themeChoice)
     applyTheme()
 }
-themeQuery.addEventListener('change', () => { if (themeChoice === 'system') applyTheme() })
+themeQuery.addEventListener('change', () => {
+    if (themeChoice === 'system') applyTheme()
+})
 applyTheme()
 $('#crumb').insertAdjacentHTML('afterend', '<div id="tabs"></div><button class="icon-button" id="new-terminal" title="新建终端">+</button>')
 $('#add').insertAdjacentHTML('beforebegin', '<button class="icon-button" id="side-new-terminal" title="为当前连接新建终端">＋</button>')
@@ -208,8 +228,7 @@ function renderConnections() {
     $('#welcome-add')?.addEventListener('click', () => openEditor())
     const c = active()
     $('#crumb').textContent = session ? (c?.name || 'SSH') : '新标签页'
-    $('#welcome-title').textContent = connections.length ? '选择一台服务器' : '还没有连接'
-    $('#welcome-copy').textContent = connections.length ? '单击连接以打开终端。' : '先保存一台服务器，再开始使用终端和文件。'
+    $('#welcome-face').textContent = randomKaomoji()
     paintIcons()
 }
 
@@ -624,20 +643,26 @@ const previewImage = previewDialog.querySelector<HTMLImageElement>('img')!
 let previewURL = ''
 let previewRequest: AbortController | undefined
 const isPreviewImage = (entry: Entry) => entry.type === 'file' && /\.(jpe?g|png|gif|webp|bmp)$/i.test(entry.name)
+
 function clearPreview() {
-    previewRequest?.abort(); previewRequest = undefined
-    previewImage.removeAttribute('src'); previewImage.classList.add('hidden')
+    previewRequest?.abort();
+    previewRequest = undefined
+    previewImage.removeAttribute('src');
+    previewImage.classList.add('hidden')
     if (previewURL) URL.revokeObjectURL(previewURL)
     previewURL = ''
 }
+
 previewDialog.querySelector('button')!.onclick = () => previewDialog.close()
 previewDialog.addEventListener('close', clearPreview)
 const previewHeader = previewDialog.querySelector<HTMLElement>('.image-preview-header')!
+
 function keepPreviewVisible(left: number, top: number) {
     const width = previewDialog.offsetWidth, height = previewDialog.offsetHeight
     previewDialog.style.left = `${Math.max(0, Math.min(left, window.innerWidth - width))}px`
     previewDialog.style.top = `${Math.max(0, Math.min(top, window.innerHeight - height))}px`
 }
+
 previewHeader.addEventListener('pointerdown', event => {
     if (event.button !== 0 || (event.target as HTMLElement).closest('button')) return
     event.preventDefault()
@@ -657,9 +682,15 @@ previewHeader.addEventListener('pointerdown', event => {
     previewHeader.addEventListener('lostpointercapture', finish)
 })
 window.addEventListener('resize', () => {
-    if (previewDialog.open) { const rect = previewDialog.getBoundingClientRect(); keepPreviewVisible(rect.left, rect.top) }
+    if (previewDialog.open) {
+        const rect = previewDialog.getBoundingClientRect();
+        keepPreviewVisible(rect.left, rect.top)
+    }
 })
-previewDialog.addEventListener('keydown', event => { if (event.key === 'Escape') previewDialog.close() })
+previewDialog.addEventListener('keydown', event => {
+    if (event.key === 'Escape') previewDialog.close()
+})
+
 async function previewFile(name: string) {
     if (!session) return
     clearPreview()
@@ -673,7 +704,10 @@ async function previewFile(name: string) {
     if (!previewDialog.open) {
         previewDialog.show()
         if (!previewDialog.style.left) keepPreviewVisible(window.innerWidth - previewDialog.offsetWidth - 16, 16)
-        else { const rect = previewDialog.getBoundingClientRect(); keepPreviewVisible(rect.left, rect.top) }
+        else {
+            const rect = previewDialog.getBoundingClientRect();
+            keepPreviewVisible(rect.left, rect.top)
+        }
     }
     try {
         const response = await api(`/api/sessions/${encodeURIComponent(sid)}/preview?path=${encodeURIComponent(remotePath)}`, {signal: controller.signal})
@@ -681,14 +715,20 @@ async function previewFile(name: string) {
         if (controller.signal.aborted) return
         if (!/^image\/(jpeg|png|gif|webp|bmp)$/i.test(blob.type)) throw new Error('服务器未返回支持的图片格式')
         previewURL = URL.createObjectURL(blob)
-        previewImage.onload = () => { previewMessage.classList.add('hidden') }
-        previewImage.onerror = () => { previewImage.classList.add('hidden'); previewMessage.textContent = '图片无法显示' }
+        previewImage.onload = () => {
+            previewMessage.classList.add('hidden')
+        }
+        previewImage.onerror = () => {
+            previewImage.classList.add('hidden');
+            previewMessage.textContent = '图片无法显示'
+        }
         previewImage.src = previewURL
         previewImage.classList.remove('hidden')
     } catch (err) {
         if (!controller.signal.aborted) previewMessage.textContent = `预览失败：${err instanceof Error ? err.message : String(err)}`
     }
 }
+
 let suppressFileClick = false
 $('#file-list').addEventListener('pointerdown', e => {
     if (e.button !== 0 || (e.target as HTMLElement).closest('[data-download]')) return
@@ -804,10 +844,14 @@ $('#file-list').ondblclick = e => {
     if ((e.target as HTMLElement).closest('[data-download]')) return
     const row = (e.target as HTMLElement).closest<HTMLElement>('.file-row')
     if (row?.dataset.type === 'directory' && row.dataset.name) void loadFiles(joinPath(currentPath, row.dataset.name))
-    else if (row?.dataset.name) { const entry = entries.find(f => f.name === row.dataset.name); if (entry && isPreviewImage(entry)) void previewFile(entry.name) }
+    else if (row?.dataset.name) {
+        const entry = entries.find(f => f.name === row.dataset.name);
+        if (entry && isPreviewImage(entry)) void previewFile(entry.name)
+    }
 }
 $('#up').onclick = () => void loadFiles(parentPath(currentPath))
 $('#refresh').onclick = () => void loadFiles(currentPath)
+
 async function downloadSelected() {
     if (!session || !selectedFiles.size) return
     const names = [...selectedFiles], sid = session, dir = currentPath

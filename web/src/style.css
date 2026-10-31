@@ -376,7 +376,13 @@ button:focus-visible, input:focus-visible { outline: 2px solid var(--blue); outl
     padding: 18px;
 }
 
-.welcome-card h1 { margin: 8px 0 4px; font-size: 16px; font-weight: 600; }
+.welcome-face {
+    margin: 2px 0 12px;
+    color: var(--sub);
+    font-size: 22px;
+    line-height: 1.5;
+    text-align: center;
+}
 
 .quick-row {
     width: 100%;
