@@ -840,6 +840,109 @@ $('#file-list').onclick = e => {
     }
     renderFiles(false)
 }
+// Text editor contract: GET returns {content, version}; POST accepts both and returns {version}.
+const editorDialog = document.createElement('dialog')
+editorDialog.className = 'text-editor-dialog'
+editorDialog.innerHTML = `<div class="text-editor-header"><div class="text-editor-title"><strong></strong><span></span></div><button type="button" class="icon-button editor-save" title="保存 (Ctrl+S)" aria-label="保存">${icon('save')}</button><button type="button" class="icon-button editor-close" aria-label="关闭">${icon('x')}</button></div><div class="text-editor-status hidden" role="alert"></div><textarea spellcheck="false" aria-label="文件内容" disabled></textarea>`
+document.body.appendChild(editorDialog)
+const editorArea = editorDialog.querySelector<HTMLTextAreaElement>('textarea')!
+const editorTitle = editorDialog.querySelector<HTMLElement>('strong')!
+const editorPath = editorDialog.querySelector<HTMLElement>('.text-editor-title span')!
+const editorStatus = editorDialog.querySelector<HTMLElement>('.text-editor-status')!
+const editorSave = editorDialog.querySelector<HTMLButtonElement>('.editor-save')!
+let editor: {sid: string; path: string; cursorKey: string; version: string; saved: string; newline: string; saving: boolean} | undefined
+const editorCursors = new Map<string, {start: number; end: number; scrollTop: number; scrollLeft: number}>()
+let editorRequest: AbortController | undefined
+function editorDirty() { return !!editor && editorArea.value !== editor.saved }
+function updateEditor() {
+    editorSave.disabled = !editor || editor.saving || !editorDirty()
+    editorTitle.textContent = editor ? `${editor.path.split('/').pop()}${editorDirty() ? ' •' : ''}` : '打开文件'
+}
+function closeTextEditor() {
+    if (editor?.saving) return
+    if (editorDirty() && !confirm('文件有未保存的修改，确定关闭吗？')) return
+    if (editor) editorCursors.set(editor.cursorKey, {
+        start: editorArea.selectionStart, end: editorArea.selectionEnd,
+        scrollTop: editorArea.scrollTop, scrollLeft: editorArea.scrollLeft
+    })
+    editorRequest?.abort()
+    editor = undefined
+    editorDialog.close()
+}
+editorDialog.querySelector<HTMLButtonElement>('.editor-close')!.onclick = closeTextEditor
+editorDialog.addEventListener('cancel', event => { event.preventDefault(); closeTextEditor() })
+editorArea.addEventListener('input', updateEditor)
+editorDialog.addEventListener('keydown', event => {
+    if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 's') {
+        event.preventDefault()
+        void saveTextFile()
+    }
+})
+editorSave.onclick = () => void saveTextFile()
+async function openTextFile(entry: Entry) {
+    if (!session) return
+    if (editorDialog.open) { toast('请先关闭当前编辑器'); return }
+    const sid = session, remotePath = joinPath(currentPath, entry.name)
+    const cursorKey = JSON.stringify([tabs.find(tab => tab.id === sid)?.connection || sid, remotePath])
+    editor = undefined
+    editorArea.value = ''
+    editorArea.disabled = true
+    editorTitle.textContent = entry.name
+    editorPath.textContent = remotePath
+    editorStatus.classList.add('hidden')
+    editorSave.disabled = true
+    editorDialog.showModal()
+    paintIcons()
+    const controller = new AbortController()
+    editorRequest = controller
+    try {
+        const response = await api(`/api/sessions/${encodeURIComponent(sid)}/content?path=${encodeURIComponent(remotePath)}`, {signal: controller.signal})
+        const data: unknown = await response.json()
+        if (controller.signal.aborted) return
+        if (!data || typeof data !== 'object' || typeof (data as any).content !== 'string' || typeof (data as any).version !== 'string') throw new Error('服务器返回的文件内容格式无效')
+        const {content, version} = data as {content: string; version: string}
+        editorArea.value = content
+        editor = {sid, path: remotePath, cursorKey, version, saved: editorArea.value, newline: content.includes('\r\n') ? '\r\n' : '\n', saving: false}
+        editorArea.disabled = false
+        updateEditor()
+        editorArea.focus()
+        const cursor = editorCursors.get(cursorKey)
+        editorArea.setSelectionRange(cursor?.start ?? 0, cursor?.end ?? 0)
+        editorArea.scrollTop = cursor?.scrollTop ?? 0
+        editorArea.scrollLeft = cursor?.scrollLeft ?? 0
+    } catch (err) {
+        if (!controller.signal.aborted) {
+            editorStatus.textContent = `打开失败：${err instanceof Error ? err.message : String(err)}`
+            editorStatus.classList.remove('hidden')
+        }
+    }
+}
+async function saveTextFile() {
+    const current = editor
+    if (!current || current.saving || !editorDirty()) return
+    const value = editorArea.value
+    current.saving = true
+    editorStatus.classList.add('hidden')
+    updateEditor()
+    try {
+        const response = await api(`/api/sessions/${encodeURIComponent(current.sid)}/content?path=${encodeURIComponent(current.path)}`, {
+            method: 'POST', headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({content: value.replace(/\n/g, current.newline), version: current.version})
+        })
+        const data: unknown = await response.json()
+        if (!data || typeof data !== 'object' || typeof (data as any).version !== 'string') throw new Error('服务器未返回保存版本，请重新打开文件确认远端内容')
+        current.version = (data as {version: string}).version
+        current.saved = value
+    } catch (err) {
+        editorStatus.textContent = `保存失败：${err instanceof Error ? err.message : String(err)}`
+        editorStatus.classList.remove('hidden')
+    } finally {
+        current.saving = false
+        updateEditor()
+    }
+}
+window.addEventListener('beforeunload', event => { if (editorDirty() || editor?.saving) event.preventDefault() })
+
 $('#file-list').ondblclick = e => {
     if ((e.target as HTMLElement).closest('[data-download]')) return
     const row = (e.target as HTMLElement).closest<HTMLElement>('.file-row')
@@ -847,6 +950,7 @@ $('#file-list').ondblclick = e => {
     else if (row?.dataset.name) {
         const entry = entries.find(f => f.name === row.dataset.name);
         if (entry && isPreviewImage(entry)) void previewFile(entry.name)
+        else if (entry) void openTextFile(entry)
     }
 }
 $('#up').onclick = () => void loadFiles(parentPath(currentPath))

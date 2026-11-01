@@ -255,6 +255,7 @@ func (s *SessionSvr) PreviewImage(ctx context.Context, id, remotePath string, fi
 	s.Mu.Lock()
 	sess, ok := s.sessions[id]
 	s.Mu.Unlock()
+
 	if !ok {
 		return nil, ErrSessionNotFound
 	}
@@ -262,11 +263,14 @@ func (s *SessionSvr) PreviewImage(ctx context.Context, id, remotePath string, fi
 		return nil, err
 	}
 	sess.mu.Lock()
+
 	if sess.previewSlots == nil {
 		sess.previewSlots = make(chan struct{}, sftpPoolSize)
 	}
+
 	slots := sess.previewSlots
 	sess.mu.Unlock()
+
 	select {
 	case slots <- struct{}{}:
 	case <-ctx.Done():
@@ -274,10 +278,12 @@ func (s *SessionSvr) PreviewImage(ctx context.Context, id, remotePath string, fi
 	case <-sess.closed:
 		return nil, errors.New("session closed")
 	}
+
 	type result struct {
 		data []byte
 		err  error
 	}
+
 	done := make(chan result, 1)
 	go func() {
 		defer func() { <-slots }()
@@ -286,6 +292,7 @@ func (s *SessionSvr) PreviewImage(ctx context.Context, id, remotePath string, fi
 			done <- result{err: err}
 			return
 		}
+
 		defer channel.Close()
 		stop := context.AfterFunc(ctx, func() { _ = channel.Close() })
 		defer stop()
@@ -293,29 +300,35 @@ func (s *SessionSvr) PreviewImage(ctx context.Context, id, remotePath string, fi
 			done <- result{err: err}
 			return
 		}
+
 		stdin, err := channel.StdinPipe()
 		if err != nil {
 			done <- result{err: err}
 			return
 		}
+
 		stdout, err := channel.StdoutPipe()
 		if err != nil {
 			done <- result{err: err}
 			return
 		}
+
 		if err := channel.RequestSubsystem("sftp"); err != nil {
 			done <- result{err: err}
 			return
 		}
+
 		client, err := sftp.NewClientPipe(stdout, stdin, sftp.MaxPacket(32768))
 		if err != nil {
 			done <- result{err: err}
 			return
 		}
+
 		defer client.Close()
 		data, err := files.PreviewImg(client, remotePath)
 		done <- result{data: data, err: err}
 	}()
+
 	select {
 	case <-ctx.Done():
 		return nil, ctx.Err()

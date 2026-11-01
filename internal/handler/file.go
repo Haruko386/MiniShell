@@ -8,6 +8,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/Haruko386/MiniShell/internal/dto"
 	"github.com/Haruko386/MiniShell/internal/service"
 	"github.com/gin-gonic/gin"
 )
@@ -279,4 +280,129 @@ func (h *FileHandler) Download(c *gin.Context) {
 	}
 
 	c.Status(http.StatusOK)
+}
+
+func (h *FileHandler) GetFile(c *gin.Context) {
+	id := strings.TrimSpace(c.Param("id"))
+	if id == "" {
+		c.JSON(http.StatusBadRequest, gin.H{
+			"message": "invalid request id",
+		})
+		return
+	}
+
+	filePath := strings.TrimSpace(c.Query("path"))
+	if filePath == "" {
+		c.JSON(http.StatusBadRequest, gin.H{
+			"message": "invalid file path",
+		})
+		return
+	}
+
+	sftpClient, release, err := h.sessionSvr.AcquireSFTP(id)
+	if err != nil {
+		status := http.StatusBadGateway
+		if errors.Is(err, service.ErrSessionNotFound) {
+			status = http.StatusNotFound
+		}
+		c.JSON(status, gin.H{
+			"message": err.Error(),
+		})
+		return
+	}
+	defer release()
+
+	data, version, err := h.fileSvr.GetContent(sftpClient, filePath)
+	if err != nil {
+		status := http.StatusBadGateway
+		switch {
+		case errors.Is(err, service.ErrFileTooLarge):
+			status = http.StatusRequestEntityTooLarge
+		case errors.Is(err, service.ErrNotTextFile):
+			status = http.StatusUnsupportedMediaType
+		}
+		c.JSON(status, gin.H{
+			"message": err.Error(),
+		})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"content": string(data),
+		"version": version,
+	})
+}
+
+func (h *FileHandler) WriteFile(c *gin.Context) {
+	id := strings.TrimSpace(c.Param("id"))
+	if id == "" {
+		c.JSON(http.StatusBadRequest, gin.H{
+			"message": "invalid request id",
+		})
+		return
+	}
+
+	filePath := strings.TrimSpace(c.Query("path"))
+	if filePath == "" {
+		c.JSON(http.StatusBadRequest, gin.H{
+			"message": "invalid request path",
+		})
+		return
+	}
+
+	var req dto.GetFileRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{
+			"message": err.Error(),
+		})
+		return
+	}
+	if req.Version == "" {
+		c.JSON(http.StatusBadRequest, gin.H{
+			"message": "version is required",
+		})
+		return
+	}
+	// A missing content field must be rejected, but an explicit empty
+	// string is a valid request to clear the file.
+	if req.Content == nil {
+		c.JSON(http.StatusBadRequest, gin.H{
+			"message": "content is required",
+		})
+		return
+	}
+
+	sftpClient, release, err := h.sessionSvr.AcquireSFTP(id)
+	if err != nil {
+		status := http.StatusBadGateway
+		if errors.Is(err, service.ErrSessionNotFound) {
+			status = http.StatusNotFound
+		}
+		c.JSON(status, gin.H{
+			"message": err.Error(),
+		})
+		return
+	}
+	defer release()
+
+	version, err := h.fileSvr.WriteContent(sftpClient, filePath, req.Version, *req.Content)
+	if err != nil {
+		status := http.StatusBadGateway
+		switch {
+		case errors.Is(err, service.ErrFileChanged):
+			status = http.StatusConflict
+		case errors.Is(err, service.ErrFileTooLarge):
+			status = http.StatusRequestEntityTooLarge
+		case errors.Is(err, service.ErrNotTextFile):
+			status = http.StatusUnsupportedMediaType
+		}
+		c.JSON(status, gin.H{
+			"message": err.Error(),
+		})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"version": version,
+	})
 }
