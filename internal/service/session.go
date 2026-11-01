@@ -38,6 +38,14 @@ type sshSession struct {
 	previewSlots chan struct{}
 	closed       chan struct{}
 	closeOnce    sync.Once
+
+	writeLocksMu sync.Mutex
+	writeLocks   map[string]*pathWriteLock
+}
+
+type pathWriteLock struct {
+	mu   sync.Mutex
+	refs int
 }
 
 func (s *sshSession) initSFTPPool() error {
@@ -128,6 +136,36 @@ func (s *sshSession) close() error {
 	}
 
 	return s.client.Close()
+}
+
+func (s *sshSession) lockWritePath(remotePath string) func() {
+	s.writeLocksMu.Lock()
+
+	if s.writeLocks == nil {
+		s.writeLocks = make(map[string]*pathWriteLock)
+	}
+
+	lock := s.writeLocks[remotePath]
+	if lock == nil {
+		lock = &pathWriteLock{}
+		s.writeLocks[remotePath] = lock
+	}
+	lock.refs++
+
+	s.writeLocksMu.Unlock()
+	lock.mu.Lock()
+
+	return func() {
+		lock.mu.Unlock()
+
+		s.writeLocksMu.Lock()
+		lock.refs--
+		if lock.refs == 0 {
+			delete(s.writeLocks, remotePath)
+		}
+
+		s.writeLocksMu.Unlock()
+	}
 }
 
 type SessionSvr struct {
@@ -351,4 +389,21 @@ func (s *SessionSvr) CloseAll() {
 	for _, sess := range sessions {
 		_ = sess.close()
 	}
+}
+
+func (s *SessionSvr) WriteFileContent(id string, files *FileSvr, remotePath, expectedVersion, content string) (string, error) {
+	s.Mu.Lock()
+	sess, ok := s.sessions[id]
+	s.Mu.Unlock()
+
+	if !ok {
+		return "", ErrSessionNotFound
+	}
+
+	client, release, err := sess.acquireSFTP()
+	if err != nil {
+		return "", err
+	}
+	defer release()
+	return files.WriteContent(client, remotePath, expectedVersion, content, sess.lockWritePath)
 }

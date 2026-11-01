@@ -292,7 +292,7 @@ func (h *FileHandler) GetFile(c *gin.Context) {
 	}
 
 	filePath := strings.TrimSpace(c.Query("path"))
-	if filePath == "" {
+	if filePath == "" || !path.IsAbs(filePath) {
 		c.JSON(http.StatusBadRequest, gin.H{
 			"message": "invalid file path",
 		})
@@ -343,7 +343,7 @@ func (h *FileHandler) WriteFile(c *gin.Context) {
 	}
 
 	filePath := strings.TrimSpace(c.Query("path"))
-	if filePath == "" {
+	if filePath == "" || !path.IsAbs(filePath) {
 		c.JSON(http.StatusBadRequest, gin.H{
 			"message": "invalid request path",
 		})
@@ -372,20 +372,7 @@ func (h *FileHandler) WriteFile(c *gin.Context) {
 		return
 	}
 
-	sftpClient, release, err := h.sessionSvr.AcquireSFTP(id)
-	if err != nil {
-		status := http.StatusBadGateway
-		if errors.Is(err, service.ErrSessionNotFound) {
-			status = http.StatusNotFound
-		}
-		c.JSON(status, gin.H{
-			"message": err.Error(),
-		})
-		return
-	}
-	defer release()
-
-	version, err := h.fileSvr.WriteContent(sftpClient, filePath, req.Version, *req.Content)
+	version, err := h.sessionSvr.WriteFileContent(id, h.fileSvr, filePath, req.Version, *req.Content)
 	if err != nil {
 		status := http.StatusBadGateway
 		switch {
@@ -395,6 +382,8 @@ func (h *FileHandler) WriteFile(c *gin.Context) {
 			status = http.StatusRequestEntityTooLarge
 		case errors.Is(err, service.ErrNotTextFile):
 			status = http.StatusUnsupportedMediaType
+		case errors.Is(err, service.ErrSessionNotFound):
+			status = http.StatusNotFound
 		}
 		c.JSON(status, gin.H{
 			"message": err.Error(),

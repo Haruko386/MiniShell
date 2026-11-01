@@ -12,7 +12,6 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
-	"sync"
 	"time"
 	"unicode/utf8"
 
@@ -29,9 +28,7 @@ var (
 	ErrNotTextFile  = errors.New("file is not a UTF-8 text file")
 )
 
-type FileSvr struct {
-	writeMu sync.Mutex
-}
+type FileSvr struct{}
 
 func NewFileSvr() *FileSvr {
 	return &FileSvr{}
@@ -482,7 +479,9 @@ func (s *FileSvr) GetContent(client *sftp.Client, filePath string) ([]byte, stri
 	return data, common.GetContentVersion(data), nil
 }
 
-func (s *FileSvr) WriteContent(client *sftp.Client, filePath, expectedVersion, content string) (string, error) {
+// WriteContent checks the version and writes in separate operations. An external
+// edit between them can be overwritten without an error.
+func (s *FileSvr) WriteContent(client *sftp.Client, filePath, expectedVersion, content string, lockPath func(string) func()) (string, error) {
 	if !path.IsAbs(filePath) {
 		return "", fmt.Errorf("%s is not an absolute path", filePath)
 	}
@@ -495,13 +494,13 @@ func (s *FileSvr) WriteContent(client *sftp.Client, filePath, expectedVersion, c
 		return "", ErrNotTextFile
 	}
 
-	s.writeMu.Lock()
-	defer s.writeMu.Unlock()
-
 	realPath, err := client.RealPath(filePath)
 	if err != nil {
 		return "", fmt.Errorf("resolve remote path error: %w", err)
 	}
+
+	unlock := lockPath(realPath)
+	defer unlock()
 
 	stat, err := client.Stat(realPath)
 	if err != nil {
