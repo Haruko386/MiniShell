@@ -7,6 +7,7 @@ import (
 	"net"
 	"os"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 
@@ -39,8 +40,18 @@ type sshSession struct {
 	closed       chan struct{}
 	closeOnce    sync.Once
 
-	writeLocksMu sync.Mutex
-	writeLocks   map[string]*pathWriteLock
+	identity connectionIdentity
+	saveSlot chan struct{}
+}
+
+type connectionIdentity struct {
+	host     string
+	port     int
+	username string
+}
+type writeLockKey struct {
+	connection connectionIdentity
+	path       string
 }
 
 type pathWriteLock struct {
@@ -138,17 +149,18 @@ func (s *sshSession) close() error {
 	return s.client.Close()
 }
 
-func (s *sshSession) lockWritePath(remotePath string) func() {
+func (s *SessionSvr) lockWritePath(identity connectionIdentity, remotePath string) func() {
 	s.writeLocksMu.Lock()
 
 	if s.writeLocks == nil {
-		s.writeLocks = make(map[string]*pathWriteLock)
+		s.writeLocks = make(map[writeLockKey]*pathWriteLock)
 	}
 
-	lock := s.writeLocks[remotePath]
+	key := writeLockKey{identity, remotePath}
+	lock := s.writeLocks[key]
 	if lock == nil {
 		lock = &pathWriteLock{}
-		s.writeLocks[remotePath] = lock
+		s.writeLocks[key] = lock
 	}
 	lock.refs++
 
@@ -161,7 +173,7 @@ func (s *sshSession) lockWritePath(remotePath string) func() {
 		s.writeLocksMu.Lock()
 		lock.refs--
 		if lock.refs == 0 {
-			delete(s.writeLocks, remotePath)
+			delete(s.writeLocks, key)
 		}
 
 		s.writeLocksMu.Unlock()
@@ -169,8 +181,10 @@ func (s *sshSession) lockWritePath(remotePath string) func() {
 }
 
 type SessionSvr struct {
-	Mu       sync.Mutex
-	sessions map[string]*sshSession
+	Mu           sync.Mutex
+	sessions     map[string]*sshSession
+	writeLocksMu sync.Mutex
+	writeLocks   map[writeLockKey]*pathWriteLock
 }
 
 func NewSessionSvr() *SessionSvr {
@@ -240,8 +254,10 @@ func (s *SessionSvr) Connect(host, username, password string, port int, policy H
 
 	s.Mu.Lock()
 	s.sessions[id] = &sshSession{
-		client: client,
-		closed: make(chan struct{}),
+		client:   client,
+		closed:   make(chan struct{}),
+		identity: connectionIdentity{strings.ToLower(strings.TrimSuffix(host, ".")), port, username},
+		saveSlot: make(chan struct{}, 1),
 	}
 	s.Mu.Unlock()
 
@@ -400,10 +416,18 @@ func (s *SessionSvr) WriteFileContent(id string, files *FileSvr, remotePath, exp
 		return "", ErrSessionNotFound
 	}
 
+	select {
+	case sess.saveSlot <- struct{}{}:
+		defer func() { <-sess.saveSlot }()
+	case <-sess.closed:
+		return "", errors.New("session closed")
+	}
 	client, release, err := sess.acquireSFTP()
 	if err != nil {
 		return "", err
 	}
 	defer release()
-	return files.WriteContent(client, remotePath, expectedVersion, content, sess.lockWritePath)
+	return files.WriteContent(client, remotePath, expectedVersion, content, func(path string) func() {
+		return s.lockWritePath(sess.identity, path)
+	})
 }

@@ -291,8 +291,8 @@ func (h *FileHandler) GetFile(c *gin.Context) {
 		return
 	}
 
-	filePath := strings.TrimSpace(c.Query("path"))
-	if filePath == "" || !path.IsAbs(filePath) {
+	filePath := c.Query("path")
+	if strings.TrimSpace(filePath) == "" || !path.IsAbs(filePath) {
 		c.JSON(http.StatusBadRequest, gin.H{
 			"message": "invalid file path",
 		})
@@ -342,8 +342,8 @@ func (h *FileHandler) WriteFile(c *gin.Context) {
 		return
 	}
 
-	filePath := strings.TrimSpace(c.Query("path"))
-	if filePath == "" || !path.IsAbs(filePath) {
+	filePath := c.Query("path")
+	if strings.TrimSpace(filePath) == "" || !path.IsAbs(filePath) {
 		c.JSON(http.StatusBadRequest, gin.H{
 			"message": "invalid request path",
 		})
