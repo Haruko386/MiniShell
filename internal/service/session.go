@@ -7,6 +7,7 @@ import (
 	"net"
 	"os"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 
@@ -38,6 +39,24 @@ type sshSession struct {
 	previewSlots chan struct{}
 	closed       chan struct{}
 	closeOnce    sync.Once
+
+	identity connectionIdentity
+	saveSlot chan struct{}
+}
+
+type connectionIdentity struct {
+	host     string
+	port     int
+	username string
+}
+type writeLockKey struct {
+	connection connectionIdentity
+	path       string
+}
+
+type pathWriteLock struct {
+	mu   sync.Mutex
+	refs int
 }
 
 func (s *sshSession) initSFTPPool() error {
@@ -130,9 +149,42 @@ func (s *sshSession) close() error {
 	return s.client.Close()
 }
 
+func (s *SessionSvr) lockWritePath(identity connectionIdentity, remotePath string) func() {
+	s.writeLocksMu.Lock()
+
+	if s.writeLocks == nil {
+		s.writeLocks = make(map[writeLockKey]*pathWriteLock)
+	}
+
+	key := writeLockKey{identity, remotePath}
+	lock := s.writeLocks[key]
+	if lock == nil {
+		lock = &pathWriteLock{}
+		s.writeLocks[key] = lock
+	}
+	lock.refs++
+
+	s.writeLocksMu.Unlock()
+	lock.mu.Lock()
+
+	return func() {
+		lock.mu.Unlock()
+
+		s.writeLocksMu.Lock()
+		lock.refs--
+		if lock.refs == 0 {
+			delete(s.writeLocks, key)
+		}
+
+		s.writeLocksMu.Unlock()
+	}
+}
+
 type SessionSvr struct {
-	Mu       sync.Mutex
-	sessions map[string]*sshSession
+	Mu           sync.Mutex
+	sessions     map[string]*sshSession
+	writeLocksMu sync.Mutex
+	writeLocks   map[writeLockKey]*pathWriteLock
 }
 
 func NewSessionSvr() *SessionSvr {
@@ -202,8 +254,10 @@ func (s *SessionSvr) Connect(host, username, password string, port int, policy H
 
 	s.Mu.Lock()
 	s.sessions[id] = &sshSession{
-		client: client,
-		closed: make(chan struct{}),
+		client:   client,
+		closed:   make(chan struct{}),
+		identity: connectionIdentity{strings.ToLower(strings.TrimSuffix(host, ".")), port, username},
+		saveSlot: make(chan struct{}, 1),
 	}
 	s.Mu.Unlock()
 
@@ -255,6 +309,7 @@ func (s *SessionSvr) PreviewImage(ctx context.Context, id, remotePath string, fi
 	s.Mu.Lock()
 	sess, ok := s.sessions[id]
 	s.Mu.Unlock()
+
 	if !ok {
 		return nil, ErrSessionNotFound
 	}
@@ -262,11 +317,14 @@ func (s *SessionSvr) PreviewImage(ctx context.Context, id, remotePath string, fi
 		return nil, err
 	}
 	sess.mu.Lock()
+
 	if sess.previewSlots == nil {
 		sess.previewSlots = make(chan struct{}, sftpPoolSize)
 	}
+
 	slots := sess.previewSlots
 	sess.mu.Unlock()
+
 	select {
 	case slots <- struct{}{}:
 	case <-ctx.Done():
@@ -274,10 +332,12 @@ func (s *SessionSvr) PreviewImage(ctx context.Context, id, remotePath string, fi
 	case <-sess.closed:
 		return nil, errors.New("session closed")
 	}
+
 	type result struct {
 		data []byte
 		err  error
 	}
+
 	done := make(chan result, 1)
 	go func() {
 		defer func() { <-slots }()
@@ -286,6 +346,7 @@ func (s *SessionSvr) PreviewImage(ctx context.Context, id, remotePath string, fi
 			done <- result{err: err}
 			return
 		}
+
 		defer channel.Close()
 		stop := context.AfterFunc(ctx, func() { _ = channel.Close() })
 		defer stop()
@@ -293,29 +354,35 @@ func (s *SessionSvr) PreviewImage(ctx context.Context, id, remotePath string, fi
 			done <- result{err: err}
 			return
 		}
+
 		stdin, err := channel.StdinPipe()
 		if err != nil {
 			done <- result{err: err}
 			return
 		}
+
 		stdout, err := channel.StdoutPipe()
 		if err != nil {
 			done <- result{err: err}
 			return
 		}
+
 		if err := channel.RequestSubsystem("sftp"); err != nil {
 			done <- result{err: err}
 			return
 		}
+
 		client, err := sftp.NewClientPipe(stdout, stdin, sftp.MaxPacket(32768))
 		if err != nil {
 			done <- result{err: err}
 			return
 		}
+
 		defer client.Close()
 		data, err := files.PreviewImg(client, remotePath)
 		done <- result{data: data, err: err}
 	}()
+
 	select {
 	case <-ctx.Done():
 		return nil, ctx.Err()
@@ -338,4 +405,29 @@ func (s *SessionSvr) CloseAll() {
 	for _, sess := range sessions {
 		_ = sess.close()
 	}
+}
+
+func (s *SessionSvr) WriteFileContent(id string, files *FileSvr, remotePath, expectedVersion, content string) (string, error) {
+	s.Mu.Lock()
+	sess, ok := s.sessions[id]
+	s.Mu.Unlock()
+
+	if !ok {
+		return "", ErrSessionNotFound
+	}
+
+	select {
+	case sess.saveSlot <- struct{}{}:
+		defer func() { <-sess.saveSlot }()
+	case <-sess.closed:
+		return "", errors.New("session closed")
+	}
+	client, release, err := sess.acquireSFTP()
+	if err != nil {
+		return "", err
+	}
+	defer release()
+	return files.WriteContent(client, remotePath, expectedVersion, content, func(path string) func() {
+		return s.lockWritePath(sess.identity, path)
+	})
 }

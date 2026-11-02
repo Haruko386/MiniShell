@@ -1,6 +1,7 @@
 package service
 
 import (
+	"bytes"
 	"errors"
 	"fmt"
 	"io"
@@ -12,9 +13,19 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unicode/utf8"
 
+	"github.com/Haruko386/MiniShell/internal/common"
 	"github.com/Haruko386/MiniShell/internal/entity"
 	"github.com/pkg/sftp"
+)
+
+const maxEditableFileSize = 16 << 20
+
+var (
+	ErrFileChanged  = errors.New("remote file has changed")
+	ErrFileTooLarge = errors.New("file is too large to edit")
+	ErrNotTextFile  = errors.New("file is not a UTF-8 text file")
 )
 
 type FileSvr struct{}
@@ -434,6 +445,137 @@ func (s *FileSvr) Download(client *sftp.Client, remotePath, localDir string) err
 		return fmt.Errorf("create local dir %s error: %w", localDir, err)
 	}
 	return downloadFile(client, realPath, localPath)
+}
+
+func (s *FileSvr) GetContent(client *sftp.Client, filePath string) ([]byte, string, error) {
+	if !path.IsAbs(filePath) {
+		return nil, "", fmt.Errorf("%s is not an absolute path", filePath)
+	}
+
+	realPath, err := client.RealPath(filePath)
+	if err != nil {
+		return nil, "", fmt.Errorf("resolve remote path error: %w", err)
+	}
+
+	stat, err := client.Stat(realPath)
+	if err != nil {
+		return nil, "", fmt.Errorf("stat file %s error: %w", realPath, err)
+	}
+	if !stat.Mode().IsRegular() {
+		return nil, "", fmt.Errorf("remote path is not a regular file: %s", realPath)
+	}
+	if stat.Size() > maxEditableFileSize {
+		return nil, "", ErrFileTooLarge
+	}
+
+	data, err := readRemoteFile(client, realPath)
+	if err != nil {
+		return nil, "", err
+	}
+	if !validTextContent(data) {
+		return nil, "", ErrNotTextFile
+	}
+
+	return data, common.GetContentVersion(data), nil
+}
+
+// WriteContent checks the version and writes in separate operations. An external
+// edit between them can be overwritten without an error.
+func (s *FileSvr) WriteContent(client *sftp.Client, filePath, expectedVersion, content string, lockPath func(string) func()) (string, error) {
+	if !path.IsAbs(filePath) {
+		return "", fmt.Errorf("%s is not an absolute path", filePath)
+	}
+
+	data := []byte(content)
+	if len(data) > maxEditableFileSize {
+		return "", ErrFileTooLarge
+	}
+	if !validTextContent(data) {
+		return "", ErrNotTextFile
+	}
+
+	realPath, err := client.RealPath(filePath)
+	if err != nil {
+		return "", fmt.Errorf("resolve remote path error: %w", err)
+	}
+
+	unlock := lockPath(realPath)
+	defer unlock()
+
+	stat, err := client.Stat(realPath)
+	if err != nil {
+		return "", fmt.Errorf("stat file %s error: %w", realPath, err)
+	}
+	if !stat.Mode().IsRegular() {
+		return "", fmt.Errorf("remote path is not a regular file: %s", realPath)
+	}
+
+	// Write through the existing file handle so ownership, ACLs, extended
+	// attributes and hard links are retained. SFTP cannot make this atomic.
+	file, err := client.OpenFile(realPath, os.O_RDWR)
+	if err != nil {
+		return "", fmt.Errorf("open remote file for writing %s: %w", realPath, err)
+	}
+	closed := false
+	defer func() {
+		if !closed {
+			_ = file.Close()
+		}
+	}()
+	current, err := io.ReadAll(io.LimitReader(file, maxEditableFileSize+1))
+	if err != nil {
+		return "", fmt.Errorf("read remote file %s: %w", realPath, err)
+	}
+	if len(current) > maxEditableFileSize {
+		return "", ErrFileTooLarge
+	}
+	if common.GetContentVersion(current) != expectedVersion {
+		return "", ErrFileChanged
+	}
+	write := func(content []byte) error {
+		if _, err := file.Seek(0, io.SeekStart); err != nil {
+			return err
+		}
+		if n, err := file.Write(content); err != nil {
+			return err
+		} else if n != len(content) {
+			return io.ErrShortWrite
+		}
+		return file.Truncate(int64(len(content)))
+	}
+	if err := write(data); err != nil {
+		if restoreErr := write(current); restoreErr != nil {
+			return "", fmt.Errorf("write remote file failed: %v; restoring original content also failed: %w; remote content may be incomplete", err, restoreErr)
+		}
+		return "", fmt.Errorf("write remote file failed; original content restored: %w", err)
+	}
+	err = file.Close()
+	closed = true
+	if err != nil {
+		return "", fmt.Errorf("close remote file after writing: %w; remote content may have changed", err)
+	}
+	return common.GetContentVersion(data), nil
+}
+
+func readRemoteFile(client *sftp.Client, filePath string) ([]byte, error) {
+	file, err := client.Open(filePath)
+	if err != nil {
+		return nil, fmt.Errorf("open remote file %s error: %w", filePath, err)
+	}
+	defer file.Close()
+
+	data, err := io.ReadAll(io.LimitReader(file, maxEditableFileSize+1))
+	if err != nil {
+		return nil, fmt.Errorf("read remote file %s error: %w", filePath, err)
+	}
+	if len(data) > maxEditableFileSize {
+		return nil, ErrFileTooLarge
+	}
+	return data, nil
+}
+
+func validTextContent(data []byte) bool {
+	return utf8.Valid(data) && bytes.IndexByte(data, 0) < 0
 }
 
 func downloadDir(client *sftp.Client, remoteDir, localDir string) error {
