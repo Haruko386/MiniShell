@@ -169,7 +169,9 @@ func (m *Manager) work(task entity.Task) error {
 		}
 		return m.FileSvr.UploadLocalChecked(sftpClient, task.LocalPath, task.RemotePath, base, snapshot, func(done, total int64) { m.updateProgress(task.ID, done, total) })
 	case "download":
-		return m.FileSvr.Download(sftpClient, task.RemotePath, task.LocalPath)
+		return m.FileSvr.Download(sftpClient, task.RemotePath, task.LocalPath, func(done, total int64) {
+			m.updateProgress(task.ID, done, total)
+		})
 	default:
 		return fmt.Errorf("unsupported direction: %s", task.Direction)
 	}

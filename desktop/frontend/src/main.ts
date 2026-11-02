@@ -354,7 +354,7 @@ $('#new-folder').onclick = () => toast('新建目录尚未接入后端')
 function setQueue(open: boolean) {
     $('#queue').classList.toggle('hidden', !open)
     if (open) $('#queue').style.width = `${queueWidth}px`
-    $('#transfer-rail').classList.toggle('hidden', open || !session || !transfers.length)
+    $('#transfer-rail').classList.toggle('hidden', open)
     if (session) requestAnimationFrame(fitTerminal)
 }
 
@@ -1063,7 +1063,7 @@ async function monitorTask(id: string, transfer: Transfer, onDone?: () => void) 
         while (true) {
             const result = await readTransferStatus(id)
             const now = performance.now()
-            if (transfer.direction === 'upload') {
+            if (transfer.direction === 'upload' || result.totalBytes > 0 || result.transferredBytes > 0) {
                 const elapsed = (now - previousTime) / 1000
                 if (elapsed > 0) {
                     transfer.speed = Math.max(0, (result.transferredBytes - previousBytes) / elapsed);
@@ -1115,15 +1115,14 @@ function renderTransfers() {
         renderTimer = undefined
         const activeJobs = transfers.filter(t => t.status !== '完成' && t.status !== '失败' && t.status !== '状态未知' && !t.status.startsWith('部分'))
         const done = transfers.filter(t => t.status === '完成' || t.status.startsWith('完成')).length
-        const totalSpeed = transfers.reduce((sum, t) => sum + (t.direction === 'upload' && t.status === '传输中' && Date.now() - (t.speedAt || 0) < 2000 ? (t.speed || 0) : 0), 0)
+        const totalSpeed = transfers.reduce((sum, t) => sum + (t.status === '传输中' && Date.now() - (t.speedAt || 0) < 2000 ? (t.speed || 0) : 0), 0)
         $('#transfer-summary').textContent = transfers.length ? `传输 ${done}/${transfers.length}${totalSpeed ? ' · ' + formatSpeed(totalSpeed) : ''}` : '传输'
         $('#transfer-badge').textContent = String(activeJobs.length)
         $('#transfer-badge').classList.toggle('hidden', !activeJobs.length)
-        if (session && transfers.length && $('#queue').classList.contains('hidden') && $('#transfer-rail').classList.contains('hidden')) setQueue(false)
         $('#transfers').innerHTML = transfers.map(t => {
             const failed = t.status === '失败' || t.status === '状态未知' || t.status.startsWith('部分')
             const label = t.direction === 'download' ? '下载' : '上传'
-            const speed = t.direction === 'upload' && t.status === '传输中' ? ` ${formatSpeed(t.speed || 0)}` : ''
+            const speed = t.status === '传输中' && t.speedAt ? ` ${formatSpeed(t.speed || 0)}` : ''
             return `<div class="transfer-row ${failed ? 'failed' : ''} ${t.status.startsWith('完成') ? 'done' : ''}">${icon(t.direction === 'download' ? 'arrow-down' : 'arrow-up')}<span class="transfer-name" title="${esc(t.name)}">${esc(t.name)}</span><div class="progress"><div style="width:${t.progress}%"></div></div><span class="transfer-meta" title="${esc(t.error || '')}">${esc(label)} · ${esc(t.status)}${speed}${t.error ? `：${esc(t.error)}` : ''}</span></div>`
         }).join('') || `<div class="file-empty"><strong>暂无传输任务</strong></div>`
         paintIcons()
@@ -1171,6 +1170,7 @@ bindResize($('#side-resize'), x => x, width => {
 
 renderConnections()
 renderFiles()
+renderTransfers()
 setConnected(false)
 paintIcons()
 void desktop().Backend().then(info => {
