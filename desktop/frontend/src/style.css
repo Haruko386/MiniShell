@@ -361,7 +361,7 @@ button:focus-visible, input:focus-visible {
     min-width: 0;
 }
 
-.connection-copy strong, .file-name span, .transfer-name, .crumb button {
+.connection-copy strong, .file-name span, .transfer-name {
     display: block;
     overflow: hidden;
     text-overflow: ellipsis;
@@ -486,6 +486,7 @@ button:focus-visible, input:focus-visible {
 
 .path-row .crumb {
     flex: 1;
+    gap: 0;
     min-width: 0;
     height: 100%;
     padding: 0;
@@ -503,27 +504,16 @@ button:focus-visible, input:focus-visible {
 }
 
 .crumb button {
-    max-width: 88px;
+    flex: none;
+    white-space: nowrap;
     border: 0;
     background: none;
     color: var(--blue);
-    padding: 0;
+    padding: 4px 6px;
 }
 
-.path-edit {
-    min-width: 0;
-    flex: 1;
-    display: flex;
-}
-
-.path-edit input {
-    width: 100%;
-    height: 26px;
-    border: 1px solid var(--line);
-    border-radius: 6px;
-    background: var(--panel);
-    padding: 0 8px;
-    font-family: Consolas, monospace;
+.crumb button:first-child {
+    padding: 4px 6px 4px 0;
 }
 
 .file-tools {

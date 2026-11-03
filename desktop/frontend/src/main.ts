@@ -69,7 +69,6 @@ let selected = connections[0]?.id || ''
 let selectedFiles = new Set<string>()
 let selectionAnchor = -1
 let session = '', socket: WebSocket | undefined, currentPath = '/', entries: Entry[] = [], transfers: Transfer[] = []
-let editingPath = false
 let queueWidth = 300
 let sideWidth = 264
 let sideOpen = true
@@ -174,7 +173,9 @@ function activateTab(tab: Tab) {
     })
 }
 
+let resizingPanel = false
 function fitTerminal() {
+    if (resizingPanel) return
     const tab = tabs.find(t => t.id === session)
     if (!tab) return
     tab.fit.fit()
@@ -569,7 +570,6 @@ async function loadFiles(path: string) {
         currentPath = data.path
         selectedFiles.clear()
         selectionAnchor = -1
-        editingPath = false
         renderFiles()
     } catch (err) {
         toast(err instanceof Error ? err.message : '读取目录失败')
@@ -590,15 +590,15 @@ function when(value: string) {
 }
 
 function renderPath() {
-    $('#crumb-bar').classList.toggle('hidden', editingPath)
-    $('#path-form').classList.toggle('hidden', !editingPath)
-    if (editingPath) {
-        $<HTMLInputElement>('#path').value = currentPath;
-        $<HTMLInputElement>('#path').focus();
-        return
-    }
-    $('#crumb-bar').innerHTML = parts(currentPath).map((part, index) => `${index ? '<span>/</span>' : ''}<button type="button" data-path="${esc(part.path)}">${esc(part.label)}</button>`).join('')
+    const bar = $('#crumb-bar')
+    bar.innerHTML = parts(currentPath).map((part, index) => `${index > 1 ? '<span>/</span>' : ''}<button type="button" data-path="${esc(part.path)}" title="${esc(part.path)}"${index === 0 ? ' aria-label="返回根目录"' : ''}>${esc(part.label)}</button>`).join('')
+    bar.scrollLeft = bar.scrollWidth
 }
+
+new ResizeObserver(() => {
+    const bar = $('#crumb-bar')
+    bar.scrollLeft = bar.scrollWidth
+}).observe($('#crumb-bar'))
 
 function renderFiles(rebuildList = true) {
     renderPath()
@@ -620,16 +620,8 @@ function renderFiles(rebuildList = true) {
 $('#crumb-bar').onclick = e => {
     const button = (e.target as HTMLElement).closest<HTMLElement>('[data-path]')
     if (!button) return
-    if (button.dataset.path === currentPath) {
-        editingPath = true;
-        renderPath();
-        return
-    }
+    if (button.dataset.path === currentPath) return
     void loadFiles(button.dataset.path!)
-}
-$('#path-form').onsubmit = e => {
-    e.preventDefault();
-    void loadFiles($<HTMLInputElement>('#path').value)
 }
 const selectionBox = document.createElement('div')
 selectionBox.className = 'selection-box hidden'
@@ -1145,17 +1137,21 @@ function bindResize(handle: HTMLElement, read: (x: number) => number, apply: (wi
     handle.addEventListener('pointerdown', event => {
         if (event.button !== 0) return
         event.preventDefault()
-        const move = (ev: PointerEvent) => apply(Math.max(180, read(ev.clientX)))
+        resizingPanel = true
+        const move = (ev: PointerEvent) => apply(Math.max(180, Math.min(480, read(ev.clientX))))
         const up = (ev: PointerEvent) => {
             const next = read(ev.clientX)
             window.removeEventListener('pointermove', move)
             window.removeEventListener('pointerup', up)
+            window.removeEventListener('pointercancel', up)
             if (next < 160) collapse()
             else apply(Math.max(220, Math.min(480, next)))
+            resizingPanel = false
             if (session) requestAnimationFrame(fitTerminal)
         }
         window.addEventListener('pointermove', move)
         window.addEventListener('pointerup', up)
+        window.addEventListener('pointercancel', up)
     })
 }
 
