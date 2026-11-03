@@ -24,6 +24,8 @@ declare global {
             }
         };
         runtime: {
+            WindowSetDarkTheme(): void;
+            WindowSetLightTheme(): void;
             OnFileDrop(callback: (x: number, y: number, paths: string[]) => void, useDropTarget: boolean): void;
             EventsOn(name: string, callback: (event: {
                 requestId: string;
@@ -113,7 +115,10 @@ function themeDark() {
 }
 
 function applyTheme() {
-    document.documentElement.dataset.theme = themeDark() ? 'dark' : 'light'
+    const dark = themeDark()
+    document.documentElement.dataset.theme = dark ? 'dark' : 'light'
+    if (dark) window.runtime?.WindowSetDarkTheme()
+    else window.runtime?.WindowSetLightTheme()
     document.documentElement.dataset.themeChoice = themeChoice
     $('#theme').innerHTML = icon(themeChoice === 'dark' ? 'moon' : themeChoice === 'light' ? 'sun' : 'monitor')
     $('#theme').title = themeChoice === 'dark' ? '深色，点击切换为跟随系统' : themeChoice === 'light' ? '浅色，点击切换为深色' : '跟随系统，点击切换为浅色'
