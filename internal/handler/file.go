@@ -272,7 +272,7 @@ func (h *FileHandler) Download(c *gin.Context) {
 	}
 	defer release()
 
-	if err := h.fileSvr.Download(sftpClient, dirPath, localPath); err != nil {
+	if err := h.fileSvr.Download(sftpClient, dirPath, localPath, nil); err != nil {
 		c.JSON(http.StatusBadGateway, gin.H{
 			"message": err.Error(),
 		})

@@ -416,7 +416,7 @@ func (s *FileSvr) PreviewImg(client *sftp.Client, imgPath string) ([]byte, error
 	return data, nil
 }
 
-func (s *FileSvr) Download(client *sftp.Client, remotePath, localDir string) error {
+func (s *FileSvr) Download(client *sftp.Client, remotePath, localDir string, progress func(done, total int64)) error {
 	if !path.IsAbs(remotePath) {
 		return fmt.Errorf("%s is not an absolute path", remotePath)
 	}
@@ -433,18 +433,27 @@ func (s *FileSvr) Download(client *sftp.Client, remotePath, localDir string) err
 
 	localPath := filepath.Join(localDir, path.Base(realPath))
 
+	var done, total int64
+	if !stat.IsDir() {
+		total = stat.Size()
+	}
+
+	if progress != nil {
+		progress(0, total)
+	}
+
 	if stat.IsDir() {
 		// folder downloads keep the remote directory tree under localDir
 		if err := os.MkdirAll(localPath, 0755); err != nil {
 			return fmt.Errorf("create local dir %s error: %w", localPath, err)
 		}
-		return downloadDir(client, realPath, localPath)
+		return downloadDir(client, realPath, localPath, &done, total, progress)
 	}
 
 	if err := os.MkdirAll(localDir, 0755); err != nil {
 		return fmt.Errorf("create local dir %s error: %w", localDir, err)
 	}
-	return downloadFile(client, realPath, localPath)
+	return downloadFile(client, realPath, localPath, &done, total, progress)
 }
 
 func (s *FileSvr) GetContent(client *sftp.Client, filePath string) ([]byte, string, error) {
@@ -578,7 +587,7 @@ func validTextContent(data []byte) bool {
 	return utf8.Valid(data) && bytes.IndexByte(data, 0) < 0
 }
 
-func downloadDir(client *sftp.Client, remoteDir, localDir string) error {
+func downloadDir(client *sftp.Client, remoteDir, localDir string, done *int64, total int64, progress func(int64, int64)) error {
 	if err := os.MkdirAll(localDir, 0755); err != nil {
 		return fmt.Errorf("create local dir %s error: %w", localDir, err)
 	}
@@ -593,20 +602,20 @@ func downloadDir(client *sftp.Client, remoteDir, localDir string) error {
 		local := filepath.Join(localDir, file.Name())
 
 		if file.IsDir() {
-			if err := downloadDir(client, remote, local); err != nil {
+			if err := downloadDir(client, remote, local, done, total, progress); err != nil {
 				return err
 			}
 			continue
 		}
 
-		if err := downloadFile(client, remote, local); err != nil {
+		if err := downloadFile(client, remote, local, done, total, progress); err != nil {
 			return err
 		}
 	}
 	return nil
 }
 
-func downloadFile(client *sftp.Client, remotePath, localPath string) error {
+func downloadFile(client *sftp.Client, remotePath, localPath string, done *int64, total int64, progress func(int64, int64)) error {
 	src, err := client.Open(remotePath) // 只读打开远程文件
 	if err != nil {
 		return fmt.Errorf("open remote file %s error: %w", remotePath, err)
@@ -618,8 +627,27 @@ func downloadFile(client *sftp.Client, remotePath, localPath string) error {
 		return fmt.Errorf("create local file %s error: %w", localPath, err)
 	}
 
-	_, copyErr := io.Copy(dst, src) // 远程 reader -> 本地 writer
+	base := *done
+	var writer io.Writer = dst
+
+	if progress != nil {
+		writer = &progressWriter{
+			dst:      dst,
+			total:    total,
+			interval: 100 * time.Millisecond,
+			report: func(fileDone, _ int64) {
+				progress(base+fileDone, total)
+			},
+		}
+	}
+
+	copied, copyErr := src.WriteTo(writer) // 远程 reader -> 本地 writer
 	closeErr := dst.Close()
+
+	*done += copied
+	if progress != nil {
+		progress(*done, total)
+	}
 
 	if copyErr != nil {
 		_ = os.Remove(localPath) // 清理半截文件
