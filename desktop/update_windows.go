@@ -387,6 +387,26 @@ func validateExecutable(path string) (err error) {
 		return errors.New("update executable has no entry point")
 	}
 
+	entryInCode := false
+	for _, section := range file.Sections {
+		if section.Characteristics&pe.IMAGE_SCN_CNT_CODE == 0 {
+			continue
+		}
+
+		size := section.VirtualSize
+		if size == 0 {
+			size = section.Size
+		}
+
+		if header.AddressOfEntryPoint >= section.VirtualAddress && header.AddressOfEntryPoint-section.VirtualAddress < size {
+			entryInCode = true
+			break
+		}
+	}
+	if !entryInCode {
+		return errors.New("update executable entry point is outside code sections")
+	}
+
 	stat, err := os.Stat(path)
 	if err != nil {
 		return err
@@ -456,14 +476,18 @@ try {
     Move-Item -LiteralPath $staging -Destination $target -Force
     $targetHash = (Get-FileHash -LiteralPath $target -Algorithm SHA256).Hash
     if ($targetHash -ne $stagingHash) { throw 'installed MiniShell.exe checksum mismatch' }
-    Start-Process -FilePath $target -WorkingDirectory (Split-Path -Parent $target)
+    $proc = Start-Process -FilePath $target -WorkingDirectory (Split-Path -Parent $target) -PassThru
+	Start-Sleep -Seconds 3
+	if ($proc.HasExited) { throw 'updated MiniShell.exe exited during startup' }
     Remove-Item -LiteralPath $work -Recurse -Force -ErrorAction SilentlyContinue
     Remove-Item -LiteralPath $PSCommandPath -Force -ErrorAction SilentlyContinue
 } catch {
+	$keepWork = $true
     try {
         if (Test-Path -LiteralPath $backup) {
             Copy-Item -LiteralPath $backup -Destination $target -Force
         }
+        $keepWork = $false
     } catch {
     }
     Remove-Item -LiteralPath $staging -Force -ErrorAction SilentlyContinue
@@ -476,6 +500,9 @@ try {
             Add-Content -LiteralPath $log -Value ("[{0}] update failed: {1}" -f (Get-Date -Format s), $_)
         } catch {
         }
+    }
+    if (-not $keepWork) {
+        Remove-Item -LiteralPath $work -Recurse -Force -ErrorAction SilentlyContinue
     }
     Remove-Item -LiteralPath $PSCommandPath -Force -ErrorAction SilentlyContinue
 }
