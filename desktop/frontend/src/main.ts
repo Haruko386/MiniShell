@@ -1388,6 +1388,10 @@ function finishUpdateProgress() {
 
 async function installUpdate() {
     if (!pendingUpdate || installingUpdate) return
+    if (editorDirty() || editor?.saving) {
+        showUpdateError("编辑器中有未保存的修改，请保存后再安装更新")
+        return
+    }
     const app = window.go?.main?.App
     if (!app || typeof app.InstallUpdate !== 'function') {
         showUpdateError('当前版本不支持自动更新，请从发布页手动下载。')

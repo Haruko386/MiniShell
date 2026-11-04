@@ -5,6 +5,7 @@ package main
 import (
 	"archive/zip"
 	"context"
+	"debug/pe"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -262,9 +263,10 @@ func (a *App) downloadUpdate(ctx context.Context, info UpdateInfo, dest string) 
 	buf := make([]byte, 64*1024)
 	var written int64
 	lastPercent := -1
+	body := io.LimitReader(resp.Body, total)
 
 	for {
-		n, readErr := resp.Body.Read(buf)
+		n, readErr := body.Read(buf)
 		if n > 0 {
 			if _, err := out.Write(buf[:n]); err != nil {
 				return err
@@ -288,6 +290,9 @@ func (a *App) downloadUpdate(ctx context.Context, info UpdateInfo, dest string) 
 
 	if err := out.Close(); err != nil {
 		return err
+	}
+	if written > maxUpdateSize {
+		return errors.New("update archive is too large")
 	}
 	if info.AssetSize > 0 && written != info.AssetSize {
 		return fmt.Errorf("download size mismatch: got %d, want %d", written, info.AssetSize)
@@ -344,18 +349,60 @@ func extractUpdate(zipPath, dest string) error {
 		return errors.New("update executable is too large")
 	}
 
-	f, err := os.Open(dest)
+	return validateExecutable(dest)
+}
+
+func validateExecutable(path string) (err error) {
+	// debug/pe is not hardened against malformed input; keep a panic from
+	// turning into a crashed update process.
+	defer func() {
+		if recovered := recover(); recovered != nil {
+			err = fmt.Errorf("invalid Windows executable: %v", recovered)
+		}
+	}()
+
+	file, err := pe.Open(path)
+	if err != nil {
+		return fmt.Errorf("invalid Windows executable: %w", err)
+	}
+	defer file.Close()
+
+	if file.Machine != pe.IMAGE_FILE_MACHINE_AMD64 {
+		return fmt.Errorf("unexpected executable architecture: 0x%x", file.Machine)
+	}
+	if file.Characteristics&pe.IMAGE_FILE_EXECUTABLE_IMAGE == 0 {
+		return errors.New("update is not an executable image")
+	}
+	if file.Characteristics&pe.IMAGE_FILE_DLL != 0 {
+		return errors.New("update is a DLL, not an application")
+	}
+	if len(file.Sections) == 0 || file.Section(".text") == nil {
+		return errors.New("update executable has no code sections")
+	}
+	header, ok := file.OptionalHeader.(*pe.OptionalHeader64)
+	if !ok {
+		return errors.New("update executable is not PE32+")
+	}
+	if header.AddressOfEntryPoint == 0 {
+		return errors.New("update executable has no entry point")
+	}
+
+	stat, err := os.Stat(path)
 	if err != nil {
 		return err
 	}
-	defer f.Close()
-
-	var sig [2]byte
-	if _, err := io.ReadFull(f, sig[:]); err != nil {
-		return fmt.Errorf("read update executable: %w", err)
+	fileSize := uint64(stat.Size())
+	if uint64(header.SizeOfHeaders) > fileSize {
+		return errors.New("update executable has an invalid header size")
 	}
-	if string(sig[:]) != "MZ" {
-		return errors.New("downloaded file is not a Windows executable")
+	for _, section := range file.Sections {
+		if section.Size == 0 {
+			continue
+		}
+		end := uint64(section.Offset) + uint64(section.Size)
+		if end < uint64(section.Offset) || end > fileSize {
+			return errors.New("update executable has truncated section data")
+		}
 	}
 	return nil
 }
@@ -372,29 +419,64 @@ $pidToWait = %d
 $target = %s
 $source = %s
 $work = %s
-$logDir = Join-Path $env:LOCALAPPDATA 'MiniShell'
-$log = Join-Path $logDir 'update.log'
-New-Item -ItemType Directory -Force -Path $logDir | Out-Null
+$staging = "${target}.new"
+$backup = Join-Path $work 'previous.exe'
+$log = $null
+try {
+    $logDir = Join-Path $env:LOCALAPPDATA 'MiniShell'
+    New-Item -ItemType Directory -Force -Path $logDir | Out-Null
+    $log = Join-Path $logDir 'update.log'
+} catch {
+    $log = $null
+}
 try {
     Wait-Process -Id $pidToWait -ErrorAction SilentlyContinue
     Start-Sleep -Milliseconds 400
+
+    # Keep the current executable so we can roll back on failure.
+    Copy-Item -LiteralPath $target -Destination $backup -Force
+
     $copied = $false
     for ($i = 0; $i -lt 20; $i++) {
         try {
-            Copy-Item -LiteralPath $source -Destination $target -Force
+            Copy-Item -LiteralPath $source -Destination $staging -Force
             $copied = $true
             break
         } catch {
             Start-Sleep -Milliseconds 300
         }
     }
-    if (-not $copied) { throw 'could not replace MiniShell.exe' }
+    if (-not $copied) { throw 'could not stage MiniShell.exe' }
+
+    $sourceHash = (Get-FileHash -LiteralPath $source -Algorithm SHA256).Hash
+    $stagingHash = (Get-FileHash -LiteralPath $staging -Algorithm SHA256).Hash
+    if ($sourceHash -ne $stagingHash) { throw 'staged MiniShell.exe checksum mismatch' }
+
+    # Replace the target only after the staged copy is complete.
+    Move-Item -LiteralPath $staging -Destination $target -Force
+    $targetHash = (Get-FileHash -LiteralPath $target -Algorithm SHA256).Hash
+    if ($targetHash -ne $stagingHash) { throw 'installed MiniShell.exe checksum mismatch' }
     Start-Process -FilePath $target -WorkingDirectory (Split-Path -Parent $target)
     Remove-Item -LiteralPath $work -Recurse -Force -ErrorAction SilentlyContinue
     Remove-Item -LiteralPath $PSCommandPath -Force -ErrorAction SilentlyContinue
 } catch {
-    Add-Content -LiteralPath $log -Value ("[{0}] update failed: {1}" -f (Get-Date -Format s), $_)
-    Start-Process -FilePath $target -WorkingDirectory (Split-Path -Parent $target)
+    try {
+        if (Test-Path -LiteralPath $backup) {
+            Copy-Item -LiteralPath $backup -Destination $target -Force
+        }
+    } catch {
+    }
+    Remove-Item -LiteralPath $staging -Force -ErrorAction SilentlyContinue
+    try {
+        Start-Process -FilePath $target -WorkingDirectory (Split-Path -Parent $target)
+    } catch {
+    }
+    if ($log) {
+        try {
+            Add-Content -LiteralPath $log -Value ("[{0}] update failed: {1}" -f (Get-Date -Format s), $_)
+        } catch {
+        }
+    }
     Remove-Item -LiteralPath $PSCommandPath -Force -ErrorAction SilentlyContinue
 }
 `, pid, psQuote(target), psQuote(source), psQuote(workDir))
