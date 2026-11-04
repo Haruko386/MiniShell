@@ -6,6 +6,7 @@ require (
 	github.com/Haruko386/MiniShell v0.0.0
 	github.com/gin-gonic/gin v1.12.0
 	github.com/wailsapp/wails/v2 v2.11.0
+	golang.org/x/mod v0.42.0
 )
 
 require (
