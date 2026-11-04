@@ -647,6 +647,18 @@ document.body.appendChild(previewDialog)
 const previewTitle = previewDialog.querySelector<HTMLElement>('strong')!
 const previewMessage = previewDialog.querySelector<HTMLElement>('.image-preview-message')!
 const previewImage = previewDialog.querySelector<HTMLImageElement>('img')!
+for (const dir of ['n', 's', 'e', 'w', 'nw', 'ne', 'sw', 'se']) {
+    const handle = document.createElement('div')
+    handle.className = 'image-preview-resize'
+    handle.dataset.resize = dir
+    handle.title = '拖动调整预览框大小，双击恢复默认'
+    handle.setAttribute('aria-hidden', 'true')
+    previewDialog.appendChild(handle)
+}
+const previewHandles = previewDialog.querySelectorAll<HTMLElement>('.image-preview-resize')
+const previewDefaultSize = {width: 480, height: 400}
+const previewMinSize = {width: 320, height: 240}
+let previewSize = {...previewDefaultSize}
 let previewURL = ''
 let previewRequest: AbortController | undefined
 const isPreviewImage = (entry: Entry) => entry.type === 'file' && /\.(jpe?g|png|gif|webp|bmp)$/i.test(entry.name)
@@ -670,6 +682,30 @@ function keepPreviewVisible(left: number, top: number) {
     previewDialog.style.top = `${Math.max(0, Math.min(top, window.innerHeight - height))}px`
 }
 
+function clampPreviewSize(width: number, height: number) {
+    const maxWidth = Math.max(1, window.innerWidth - 32)
+    const maxHeight = Math.max(1, window.innerHeight - 32)
+    return {
+        width: Math.round(Math.min(Math.max(width, Math.min(previewMinSize.width, maxWidth)), maxWidth)),
+        height: Math.round(Math.min(Math.max(height, Math.min(previewMinSize.height, maxHeight)), maxHeight))
+    }
+}
+
+function applyPreviewSize(width = previewSize.width, height = previewSize.height) {
+    const size = clampPreviewSize(width, height)
+    previewSize = size
+    previewDialog.style.width = `${size.width}px`
+    previewDialog.style.height = `${size.height}px`
+}
+
+function setPreviewGeometry(left: number, top: number, width: number, height: number) {
+    previewSize = {width: Math.round(width), height: Math.round(height)}
+    previewDialog.style.left = `${Math.round(left)}px`
+    previewDialog.style.top = `${Math.round(top)}px`
+    previewDialog.style.width = `${previewSize.width}px`
+    previewDialog.style.height = `${previewSize.height}px`
+}
+
 previewHeader.addEventListener('pointerdown', event => {
     if (event.button !== 0 || (event.target as HTMLElement).closest('button')) return
     event.preventDefault()
@@ -688,8 +724,59 @@ previewHeader.addEventListener('pointerdown', event => {
     previewHeader.addEventListener('pointercancel', finish)
     previewHeader.addEventListener('lostpointercapture', finish)
 })
+
+previewHandles.forEach(handle => {
+    handle.addEventListener('pointerdown', event => {
+        if (event.button !== 0) return
+        event.preventDefault()
+        event.stopPropagation()
+        const dir = handle.dataset.resize || 'se'
+        const rect = previewDialog.getBoundingClientRect()
+        const startX = event.clientX, startY = event.clientY
+        const startWidth = rect.width, startHeight = rect.height
+        const startRight = rect.left + rect.width, startBottom = rect.top + rect.height
+        const west = dir.includes('w'), north = dir.includes('n')
+        const horizontal = west || dir.includes('e'), vertical = north || dir.includes('s')
+        const maxWidth = west ? Math.max(1, startRight) : Math.max(1, window.innerWidth - rect.left)
+        const maxHeight = north ? Math.max(1, startBottom) : Math.max(1, window.innerHeight - rect.top)
+        const minWidth = Math.min(previewMinSize.width, maxWidth)
+        const minHeight = Math.min(previewMinSize.height, maxHeight)
+        handle.setPointerCapture(event.pointerId)
+        previewDialog.classList.add('resizing')
+        const move = (e: PointerEvent) => {
+            const size = clampPreviewSize(
+                horizontal ? Math.max(minWidth, Math.min(maxWidth, startWidth + (west ? startX - e.clientX : e.clientX - startX))) : startWidth,
+                vertical ? Math.max(minHeight, Math.min(maxHeight, startHeight + (north ? startY - e.clientY : e.clientY - startY))) : startHeight
+            )
+            setPreviewGeometry(
+                west ? startRight - size.width : rect.left,
+                north ? startBottom - size.height : rect.top,
+                size.width,
+                size.height
+            )
+        }
+        const finish = () => {
+            handle.removeEventListener('pointermove', move)
+            handle.removeEventListener('pointerup', finish)
+            handle.removeEventListener('pointercancel', finish)
+            handle.removeEventListener('lostpointercapture', finish)
+            previewDialog.classList.remove('resizing')
+        }
+        handle.addEventListener('pointermove', move)
+        handle.addEventListener('pointerup', finish)
+        handle.addEventListener('pointercancel', finish)
+        handle.addEventListener('lostpointercapture', finish)
+    })
+    handle.addEventListener('dblclick', event => {
+        event.preventDefault()
+        applyPreviewSize(previewDefaultSize.width, previewDefaultSize.height)
+        const rect = previewDialog.getBoundingClientRect();
+        keepPreviewVisible(rect.left, rect.top)
+    })
+})
 window.addEventListener('resize', () => {
     if (previewDialog.open) {
+        applyPreviewSize()
         const rect = previewDialog.getBoundingClientRect();
         keepPreviewVisible(rect.left, rect.top)
     }
@@ -708,6 +795,7 @@ async function previewFile(name: string) {
     previewImage.alt = name
     previewMessage.textContent = '正在加载图片…'
     previewMessage.classList.remove('hidden')
+    applyPreviewSize()
     if (!previewDialog.open) {
         previewDialog.show()
         if (!previewDialog.style.left) keepPreviewVisible(window.innerWidth - previewDialog.offsetWidth - 16, 16)
