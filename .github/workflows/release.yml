@@ -38,7 +38,9 @@ jobs:
       - name: Build desktop app
         working-directory: desktop
         shell: pwsh
-        run: wails build -clean -platform windows/amd64 -o MiniShell.exe
+        env:
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: wails build -clean -platform windows/amd64 -o MiniShell.exe -ldflags "-X main.version=${{ github.ref_name }}"
 
       - name: Build server binaries
         shell: pwsh

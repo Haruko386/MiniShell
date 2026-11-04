@@ -1,4 +1,19 @@
 declare global {
+    type UpdateInfo = {
+        current: string;
+        latest: string;
+        available: boolean;
+        releaseUrl: string;
+        notes: string;
+        assetName: string;
+        assetSize: number;
+        assetUrl: string
+    }
+    type UpdateProgress = {
+        stage: string;
+        percent: number;
+        message?: string
+    }
     interface Window {
         go: {
             main: {
@@ -19,18 +34,24 @@ declare global {
                         error: string;
                         transferredBytes: number;
                         totalBytes: number
-                    }>
+                    }>;
+                    CheckForUpdate(): Promise<UpdateInfo>;
+                    InstallUpdate(): Promise<void>
                 }
             }
         };
         runtime: {
             WindowSetDarkTheme(): void;
             WindowSetLightTheme(): void;
+            Quit(): void;
+            BrowserOpenURL(url: string): void;
             OnFileDrop(callback: (x: number, y: number, paths: string[]) => void, useDropTarget: boolean): void;
-            EventsOn(name: string, callback: (event: {
+            EventsOn(name: 'update:progress', callback: (event: UpdateProgress) => void): () => void;
+            EventsOn(name: 'upload:task', callback: (event: {
                 requestId: string;
                 task: { id: string; name: string; size: number }
-            }) => void): () => void
+            }) => void): () => void;
+            EventsOn(name: string, callback: (event: unknown) => void): () => void
         }
     }
 }
@@ -1267,11 +1288,184 @@ bindResize($('#side-resize'), x => x, width => {
     applyPanels()
 })
 
+const updateSkipKey = 'minishell.update.skipped'
+const updateDialog = document.createElement('dialog')
+updateDialog.className = 'update-dialog'
+updateDialog.tabIndex = -1
+updateDialog.setAttribute('aria-labelledby', 'update-dialog-title')
+updateDialog.innerHTML = `<div class="update-dialog-head"><span class="update-icon">${icon('download', 18)}</span><div class="update-title"><h2 id="update-dialog-title">发现新版本</h2><p>下载完成后将自动重启 MiniShell</p></div><button type="button" class="icon-button update-close" aria-label="稍后提醒">×</button></div><div class="update-body"><div class="update-versions"><span class="update-version update-current"><small>当前版本</small><code></code></span><span class="update-version-arrow">→</span><span class="update-version latest"><small>最新版本</small><code></code><span class="update-version-size"></span></span></div><section class="update-notes-wrap"><h3>更新内容</h3><div class="update-notes"></div></section><div class="update-progress hidden"><div class="update-progress-track"><div class="update-progress-fill"></div></div><p class="update-progress-text" role="status"></p></div><p class="update-error hidden" role="alert"></p></div><div class="update-actions"><button type="button" class="button update-release">查看发布页</button><span class="update-spacer"></span><button type="button" class="button update-skip">跳过此版本</button><button type="button" class="button primary update-install">立即更新</button></div>`
+document.body.appendChild(updateDialog)
+paintIcons()
+
+const updateCurrent = updateDialog.querySelector<HTMLElement>('.update-current code')!
+const updateLatest = updateDialog.querySelector<HTMLElement>('.update-version.latest code')!
+const updateSize = updateDialog.querySelector<HTMLElement>('.update-version-size')!
+const updateNotesWrap = updateDialog.querySelector<HTMLElement>('.update-notes-wrap')!
+const updateNotes = updateDialog.querySelector<HTMLElement>('.update-notes')!
+const updateProgress = updateDialog.querySelector<HTMLElement>('.update-progress')!
+const updateProgressTrack = updateDialog.querySelector<HTMLElement>('.update-progress-track')!
+const updateProgressFill = updateDialog.querySelector<HTMLElement>('.update-progress-fill')!
+const updateProgressText = updateDialog.querySelector<HTMLElement>('.update-progress-text')!
+const updateError = updateDialog.querySelector<HTMLElement>('.update-error')!
+const updateInstall = updateDialog.querySelector<HTMLButtonElement>('.update-install')!
+const updateSkip = updateDialog.querySelector<HTMLButtonElement>('.update-skip')!
+const updateRelease = updateDialog.querySelector<HTMLButtonElement>('.update-release')!
+const updateClose = updateDialog.querySelector<HTMLButtonElement>('.update-close')!
+let pendingUpdate: UpdateInfo | null = null
+let installingUpdate = false
+let updateReady = false
+
+function setUpdateBusy(busy: boolean) {
+    updateInstall.disabled = busy
+    updateSkip.disabled = busy
+    updateRelease.disabled = busy
+    updateClose.disabled = busy
+}
+
+function showUpdateError(message: string) {
+    updateError.textContent = message
+    updateError.classList.remove('hidden')
+}
+
+function renderUpdate(info: UpdateInfo) {
+    pendingUpdate = info
+    installingUpdate = false
+    updateReady = false
+    updateCurrent.textContent = info.current || '未知'
+    updateLatest.textContent = info.latest
+    updateSize.textContent = info.assetSize > 0 ? size(info.assetSize) : ''
+    updateSize.classList.toggle('hidden', !(info.assetSize > 0))
+    const notes = (info.notes || '').trim()
+    updateNotes.textContent = notes
+    updateNotesWrap.classList.toggle('hidden', !notes)
+    updateError.textContent = ''
+    updateError.classList.add('hidden')
+    updateProgress.classList.add('hidden')
+    updateProgressTrack.classList.remove('indeterminate')
+    updateProgressFill.style.width = '0'
+    updateProgressText.textContent = ''
+    updateInstall.textContent = '立即更新'
+    setUpdateBusy(false)
+}
+
+function updateStageText(stage: string) {
+    switch (stage) {
+        case 'download':
+        case 'downloading':
+            return '正在下载更新'
+        case 'extract':
+        case 'extracting':
+            return '正在解压更新'
+        case 'apply':
+        case 'applying':
+            return '正在准备更新'
+        case 'restart':
+        case 'restarting':
+            return '正在重启'
+        default:
+            return '正在更新'
+    }
+}
+
+function setUpdateProgress(progress: UpdateProgress) {
+    if (!installingUpdate || updateReady || !progress) return
+    updateProgress.classList.remove('hidden')
+    updateError.classList.add('hidden')
+    const percent = Number.isFinite(progress.percent) ? Math.min(100, Math.max(0, progress.percent)) : 0
+    const determinate = percent > 0
+    updateProgressTrack.classList.toggle('indeterminate', !determinate)
+    updateProgressFill.style.width = determinate ? `${percent}%` : '35%'
+    const label = (progress.message || '').trim() || updateStageText(progress.stage)
+    updateProgressText.textContent = `${label}…${determinate ? ` ${Math.round(percent)}%` : ''}`
+}
+
+function finishUpdateProgress() {
+    updateProgress.classList.remove('hidden')
+    updateProgressTrack.classList.remove('indeterminate')
+    updateProgressFill.style.width = '100%'
+    updateProgressText.textContent = '更新已准备好，正在重启…'
+}
+
+async function installUpdate() {
+    if (!pendingUpdate || installingUpdate) return
+    if (editorDirty() || editor?.saving) {
+        showUpdateError("编辑器中有未保存的修改，请保存后再安装更新")
+        return
+    }
+    const app = window.go?.main?.App
+    if (!app || typeof app.InstallUpdate !== 'function') {
+        showUpdateError('当前版本不支持自动更新，请从发布页手动下载。')
+        return
+    }
+    installingUpdate = true
+    updateReady = false
+    setUpdateBusy(true)
+    updateInstall.textContent = '正在更新…'
+    updateError.textContent = ''
+    updateError.classList.add('hidden')
+    updateProgress.classList.remove('hidden')
+    updateProgressTrack.classList.add('indeterminate')
+    updateProgressFill.style.width = '35%'
+    updateProgressText.textContent = '正在准备更新…'
+    const off = window.runtime?.EventsOn?.('update:progress', setUpdateProgress)
+    try {
+        await app.InstallUpdate()
+        off?.()
+        updateReady = true
+        finishUpdateProgress()
+        setTimeout(() => {
+            if (typeof window.runtime?.Quit === 'function') window.runtime.Quit()
+        }, 800)
+    } catch (err) {
+        off?.()
+        installingUpdate = false
+        setUpdateBusy(false)
+        updateInstall.textContent = '重试'
+        updateProgress.classList.add('hidden')
+        showUpdateError(`更新失败：${err instanceof Error ? err.message : String(err)}。你也可以从发布页手动下载。`)
+    }
+}
+
+async function checkForUpdates() {
+    const app = window.go?.main?.App
+    if (!app || typeof app.CheckForUpdate !== 'function') return
+    try {
+        const info = await app.CheckForUpdate()
+        if (!info?.available || !info.current || !info.latest || info.latest === info.current) return
+        if (info.current.toLowerCase() === 'dev') return
+        if (localStorage.getItem(updateSkipKey) === info.latest) return
+        renderUpdate(info)
+        if (updateDialog.open) updateDialog.close()
+        updateDialog.showModal()
+        updateDialog.focus()
+    } catch (err) {
+        console.warn('Update check failed', err)
+    }
+}
+
+updateClose.onclick = () => updateDialog.close()
+updateSkip.onclick = () => {
+    if (!pendingUpdate || installingUpdate) return
+    localStorage.setItem(updateSkipKey, pendingUpdate.latest)
+    updateDialog.close()
+    toast(`已跳过 ${pendingUpdate.latest}，将在下个版本提醒`)
+}
+updateRelease.onclick = () => {
+    if (!pendingUpdate?.releaseUrl) return
+    if (typeof window.runtime?.BrowserOpenURL === 'function') window.runtime.BrowserOpenURL(pendingUpdate.releaseUrl)
+    else window.open(pendingUpdate.releaseUrl, '_blank', 'noopener')
+}
+updateInstall.onclick = () => void installUpdate()
+updateDialog.addEventListener('cancel', event => {
+    if (installingUpdate) event.preventDefault()
+})
+
 renderConnections()
 renderFiles()
 renderTransfers()
 setConnected(false)
 paintIcons()
+setTimeout(() => void checkForUpdates(), 1200)
 void desktop().Backend().then(info => {
     backend = info
     window.runtime.OnFileDrop((_x, _y, paths) => {
