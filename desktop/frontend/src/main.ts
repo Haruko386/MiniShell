@@ -589,16 +589,26 @@ function when(value: string) {
     return date.toLocaleString('zh-CN', {month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit'})
 }
 
+const crumbBar = $('#crumb-bar')
+let crumbScrollLeft = 0
+let crumbAtEnd = true
+
+crumbBar.addEventListener('scroll', () => {
+    crumbScrollLeft = crumbBar.scrollLeft
+    crumbAtEnd = crumbBar.scrollLeft + crumbBar.clientWidth >= crumbBar.scrollWidth - 1
+}, {passive: true})
+
 function renderPath() {
-    const bar = $('#crumb-bar')
-    bar.innerHTML = parts(currentPath).map((part, index) => `${index > 1 ? '<span>/</span>' : ''}<button type="button" data-path="${esc(part.path)}" title="${esc(part.path)}"${index === 0 ? ' aria-label="返回根目录"' : ''}>${esc(part.label)}</button>`).join('')
-    bar.scrollLeft = bar.scrollWidth
+    crumbBar.innerHTML = parts(currentPath).map((part, index) => `${index > 1 ? '<span>/</span>' : ''}<button type="button" data-path="${esc(part.path)}" title="${esc(part.path)}"${index === 0 ? ' aria-label="返回根目录"' : ''}>${esc(part.label)}</button>`).join('')
+    crumbBar.scrollLeft = crumbBar.scrollWidth
+    crumbScrollLeft = crumbBar.scrollLeft
+    crumbAtEnd = true
 }
 
 new ResizeObserver(() => {
-    const bar = $('#crumb-bar')
-    bar.scrollLeft = bar.scrollWidth
-}).observe($('#crumb-bar'))
+    const max = Math.max(0, crumbBar.scrollWidth - crumbBar.clientWidth)
+    crumbBar.scrollLeft = crumbAtEnd ? max : Math.min(crumbScrollLeft, max)
+}).observe(crumbBar)
 
 function renderFiles(rebuildList = true) {
     renderPath()
