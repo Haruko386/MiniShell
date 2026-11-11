@@ -27,6 +27,7 @@ type App struct {
 	sessions    *service.SessionSvr
 	files       *service.FileSvr
 	base, token string
+	windowState windowStateManager
 }
 
 func NewApp() *App                         { return &App{} }
