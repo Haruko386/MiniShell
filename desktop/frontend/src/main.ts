@@ -45,6 +45,7 @@ declare global {
             WindowSetLightTheme(): void;
             Quit(): void;
             BrowserOpenURL(url: string): void;
+            ClipboardSetText(text: string): Promise<boolean>;
             OnFileDrop(callback: (x: number, y: number, paths: string[]) => void, useDropTarget: boolean): void;
             EventsOn(name: 'update:progress', callback: (event: UpdateProgress) => void): () => void;
             EventsOn(name: 'upload:task', callback: (event: {
@@ -791,8 +792,9 @@ selectionBox.className = 'selection-box hidden'
 document.body.appendChild(selectionBox)
 const fileMenu = document.createElement('div')
 fileMenu.className = 'file-context-menu hidden'
-fileMenu.innerHTML = '<button data-action="new-file">新建文件...</button><button data-action="new-folder">新建文件夹...</button><hr><button data-action="preview">预览图片</button><button data-action="download">下载选中项</button><button data-action="delete">删除选中项</button>'
+fileMenu.innerHTML = '<button data-action="new-file">新建文件...</button><button data-action="new-folder">新建文件夹...</button><hr><button data-action="copy-path">复制绝对路径</button><button data-action="copy-relative-path">复制相对路径</button><hr><button data-action="preview">预览图片</button><button data-action="download">下载选中项</button><button data-action="delete">删除选中项</button>'
 let menuParent = ''
+let menuPaths = {absolute: '', relative: ''}
 document.body.appendChild(fileMenu)
 const previewDialog = document.createElement('dialog')
 previewDialog.className = 'image-preview'
@@ -1033,6 +1035,10 @@ $('#dropzone').oncontextmenu = e => {
         renderFiles(false)
     }
     const previewEntries = visibleFiles().filter(f => selectedFiles.has(f.name))
+    const names = [...selectedFiles]
+    menuPaths = {absolute: names.map(name => joinPath(currentPath, name)).join('\n'), relative: names.join('\n')}
+    $<HTMLButtonElement>('[data-action="copy-path"]').disabled = !names.length
+    $<HTMLButtonElement>('[data-action="copy-relative-path"]').disabled = !names.length
     $<HTMLButtonElement>('[data-action="preview"]').disabled = previewEntries.length !== 1 || !isPreviewImage(previewEntries[0])
     $<HTMLButtonElement>('[data-action="download"]').disabled = !selectedFiles.size
     $<HTMLButtonElement>('[data-action="delete"]').disabled = !selectedFiles.size
@@ -1046,6 +1052,17 @@ document.addEventListener('pointerdown', e => {
 fileMenu.onclick = async e => {
     const action = (e.target as HTMLElement).closest<HTMLElement>('[data-action]')?.dataset.action
     fileMenu.classList.add('hidden')
+    if (action === 'copy-path' || action === 'copy-relative-path') {
+        const text = action === 'copy-path' ? menuPaths.absolute : menuPaths.relative
+        if (!text) return
+        try {
+            if (!await window.runtime.ClipboardSetText(text)) throw new Error('无法写入剪贴板')
+            toast(action === 'copy-path' ? '已复制绝对路径' : '已复制相对路径')
+        } catch (err) {
+            toast(`复制失败：${err instanceof Error ? err.message : String(err)}`)
+        }
+        return
+    }
     if (action === 'new-file' || action === 'new-folder') {
         void createEntry(action === 'new-file' ? 'file' : 'directory', menuParent)
         return
