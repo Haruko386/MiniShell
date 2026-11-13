@@ -62,6 +62,8 @@ import {FitAddon} from '@xterm/addon-fit'
 import '@xterm/xterm/css/xterm.css'
 import {createIcons, icons} from 'lucide'
 import {joinPath, parentPath, parts} from './path'
+import {createRemoteEntry} from './create-entry'
+import {flattenFiles, creationParent, creationIndex} from './file-tree'
 import './style.css'
 
 type Connection = { id: string; name: string; host: string; port: number; username: string; password?: string }
@@ -90,6 +92,11 @@ let selected = connections[0]?.id || ''
 let selectedFiles = new Set<string>()
 let selectionAnchor = -1
 let session = '', socket: WebSocket | undefined, currentPath = '/', entries: Entry[] = [], transfers: Transfer[] = []
+const expandedFolders = new Map<string, Entry[]>()
+const visibleFiles = () => flattenFiles(entries, expandedFolders)
+let cancelCreation: (() => void) | undefined
+let creationVersion = 0
+let directoryLoadVersion = 0
 let queueWidth = 300
 let sideWidth = 264
 let sideOpen = true
@@ -173,6 +180,8 @@ function renderTabs() {
 }
 
 function activateTab(tab: Tab) {
+    cancelCreation?.()
+    expandedFolders.clear()
     const previous = tabs.find(t => t.id === session)
     if (previous) previous.path = currentPath
     session = tab.id;
@@ -375,8 +384,89 @@ $('#open-side').onclick = () => {
     sideWidth = Math.max(220, sideWidth);
     applyPanels()
 }
-$('#new-file').onclick = () => toast('新建文件尚未接入后端')
-$('#new-folder').onclick = () => toast('新建目录尚未接入后端')
+$('#new-file').onclick = () => createEntry('file')
+$('#new-folder').onclick = () => createEntry('directory')
+
+async function createEntry(type: 'file' | 'directory', parent = creationParent(visibleFiles().find(f => selectedFiles.has(f.name)))) {
+    if (!session) return toast('请先连接服务器')
+    const version = ++creationVersion
+    const ownsForm = () => creationVersion === version
+    cancelCreation?.()
+    const sid = session, root = currentPath, dir = parent ? joinPath(root, parent) : root
+    if (parent && !expandedFolders.has(parent) && !await expandFolder(parent, ownsForm)) return
+    if (session !== sid || currentPath !== root || !ownsForm()) return
+    renderFiles()
+    const label = type === 'file' ? '文件' : '文件夹'
+    const rows = visibleFiles(), index = creationIndex(rows, parent, type)
+    const depth = parent ? parent.split('/').length : 0
+    const form = document.createElement('form')
+    form.className = 'file-row file-create-row'
+    form.style.paddingLeft = `${8 + depth * 16}px`
+    form.innerHTML = `<span>${type === 'directory' ? icon('chevron-right', 14) : ''}</span>${icon(type === 'file' ? 'file' : 'folder')}<div class="file-create-field"><input aria-label="新建${label}名称" autocomplete="off" spellcheck="false"><span class="file-create-error hidden" role="alert"></span></div>`
+    const input = form.querySelector('input')!
+    const error = form.querySelector<HTMLElement>('.file-create-error')!
+    let saving = false
+    const cancel = () => {
+        if (cancelCreation === cancel) cancelCreation = undefined
+        form.remove()
+        $('#file-empty').classList.toggle('hidden', !session || !!entries.length)
+    }
+    cancelCreation = cancel
+    const submit = async () => {
+        if (saving) return
+        const name = input.value
+        if (!name) { cancel(); return }
+        const siblings = parent ? expandedFolders.get(parent)! : entries
+        if (siblings.some(f => f.name === name)) {
+            error.textContent = '同名文件或文件夹已存在'
+            error.classList.remove('hidden')
+            input.setAttribute('aria-invalid', 'true')
+            return
+        }
+        saving = true
+        input.readOnly = true
+        try {
+            await createRemoteEntry(api, type, sid, dir, name)
+            if (!ownsForm()) return
+            cancel()
+            if (session === sid && currentPath === root) {
+                if (parent) await expandFolder(parent, ownsForm)
+                else await loadFiles(root, ownsForm)
+                if (session !== sid || currentPath !== root || !ownsForm()) return
+                selectedFiles.clear()
+                const createdName = parent ? `${parent}/${name}` : name
+                selectedFiles.add(createdName)
+                renderFiles(false)
+                const created = visibleFiles().find(f => f.name === createdName)
+                if (type === 'file' && created) void openTextFile(created)
+            }
+        } catch (err) {
+            const message = err instanceof Error ? err.message : '创建失败'
+            if (!form.isConnected) { toast(message); return }
+            error.textContent = message
+            error.classList.remove('hidden')
+            input.setAttribute('aria-invalid', 'true')
+        } finally {
+            saving = false
+            input.readOnly = false
+        }
+    }
+    form.onsubmit = e => { e.preventDefault(); void submit() }
+    input.onkeydown = e => {
+        if (e.isComposing) return
+        if (e.key === 'Escape' && !saving) { e.preventDefault(); cancel() }
+        if (e.key === 'Enter') { e.preventDefault(); void submit() }
+    }
+    input.oninput = () => { error.classList.add('hidden'); input.removeAttribute('aria-invalid') }
+    input.onblur = () => {
+        if (form.isConnected && !saving && error.classList.contains('hidden')) void submit()
+    }
+    $('#file-list').insertBefore(form, $('#file-list').children[index] ?? null)
+    $('#file-empty').classList.add('hidden')
+    paintIcons()
+    input.focus()
+    input.scrollIntoView({block: 'nearest'})
+}
 
 function setQueue(open: boolean) {
     $('#queue').classList.toggle('hidden', !open)
@@ -556,6 +646,7 @@ async function closeTab(id: string) {
         if (next) activateTab(next)
         else {
             entries = [];
+            expandedFolders.clear();
             selectedFiles.clear();
             selectionAnchor = -1;
             currentPath = '/';
@@ -571,29 +662,65 @@ async function closeTab(id: string) {
     }
 }
 
-async function loadFiles(path: string) {
+async function readDirectory(sid: string, path: string) {
+    const res = await api(`/api/sessions/${encodeURIComponent(sid)}/files?path=${encodeURIComponent(path)}`)
+    const data = await res.json()
+    if (typeof data.path !== 'string' || !Array.isArray(data.entries)) throw new Error('服务器返回的文件列表格式有误')
+    const files = data.entries.map((item: Record<string, unknown>) => {
+        const name = item.name ?? item.Name, type = item.type ?? item.Type, size = item.size ?? item.Size,
+            modifiedAt = item.modifiedAt ?? item.ModifiedAt
+        if (typeof name !== 'string' || (type !== 'file' && type !== 'directory') || typeof size !== 'number' || typeof modifiedAt !== 'string') throw new Error('服务器返回的文件信息格式有误')
+        return {name, type, size, modifiedAt}
+    }).sort((a: Entry, b: Entry) => Number(b.type === 'directory') - Number(a.type === 'directory') || a.name.localeCompare(b.name, 'zh-CN'))
+    return {path: data.path as string, entries: files}
+}
+
+async function expandFolder(name: string, ownsForm = () => true) {
+    const sid = session, root = currentPath
+    const loadVersion = directoryLoadVersion
+    try {
+        const data = await readDirectory(sid, joinPath(root, name))
+        if (session !== sid || currentPath !== root || loadVersion !== directoryLoadVersion || !ownsForm()) return false
+        expandedFolders.set(name, data.entries)
+        renderFiles()
+        return true
+    } catch (err) {
+        toast(err instanceof Error ? err.message : '读取目录失败')
+        return false
+    }
+}
+
+async function loadFiles(path: string, ownsForm = () => true) {
+    cancelCreation?.()
     if (!session) {
         toast('请先连接服务器');
         return
     }
     const requestedSession = session
+    const loadVersion = ++directoryLoadVersion
+    const ownsLoad = () => session === requestedSession && loadVersion === directoryLoadVersion && ownsForm()
     try {
-        const res = await api(`/api/sessions/${encodeURIComponent(requestedSession)}/files?path=${encodeURIComponent(path)}`)
-        const data = await res.json()
-        if (session !== requestedSession) return
-        if (typeof data.path !== 'string' || !Array.isArray(data.entries)) throw new Error('服务器返回的文件列表格式有误')
-        entries = data.entries.map((item: Record<string, unknown>) => {
-            const name = item.name ?? item.Name, type = item.type ?? item.Type, size = item.size ?? item.Size,
-                modifiedAt = item.modifiedAt ?? item.ModifiedAt
-            if (typeof name !== 'string' || (type !== 'file' && type !== 'directory') || typeof size !== 'number' || typeof modifiedAt !== 'string') throw new Error('服务器返回的文件信息格式有误')
-            return {name, type, size, modifiedAt}
-        }).sort((a: Entry, b: Entry) => Number(b.type === 'directory') - Number(a.type === 'directory') || a.name.localeCompare(b.name, 'zh-CN'))
+        const data = await readDirectory(requestedSession, path)
+        if (!ownsLoad()) return
+        if (currentPath !== data.path) expandedFolders.clear()
+        else {
+            await Promise.all([...expandedFolders.keys()].map(async name => {
+                try {
+                    const child = await readDirectory(requestedSession, joinPath(data.path, name))
+                    if (ownsLoad() && currentPath === data.path && expandedFolders.has(name)) expandedFolders.set(name, child.entries)
+                } catch {
+                    if (ownsLoad() && currentPath === data.path) expandedFolders.delete(name)
+                }
+            }))
+            if (!ownsLoad()) return
+        }
+        entries = data.entries
         currentPath = data.path
         selectedFiles.clear()
         selectionAnchor = -1
         renderFiles()
     } catch (err) {
-        toast(err instanceof Error ? err.message : '读取目录失败')
+        if (ownsLoad()) toast(err instanceof Error ? err.message : '读取目录失败')
     }
 }
 
@@ -633,16 +760,21 @@ new ResizeObserver(() => {
 
 function renderFiles(rebuildList = true) {
     renderPath()
-    if (rebuildList) $('#file-list').innerHTML = entries.map(f => {
-        const meta = f.type === 'directory' ? '目录' : `${size(f.size)} · ${when(f.modifiedAt)}`
-        return `<div class="file-row ${f.type === 'directory' ? 'directory' : ''} ${selectedFiles.has(f.name) ? 'selected' : ''}" data-name="${esc(f.name)}" data-type="${esc(f.type)}" title="${esc(f.name)}&#10;${esc(meta)}">${icon(f.type === 'directory' ? 'folder' : 'file')}<span class="file-name"><span>${esc(f.name)}</span></span><button class="file-download icon-button" data-download title="下载" aria-label="下载 ${esc(f.name)}">${icon('download', 14)}</button></div>`
-    }).join('')
+    if (rebuildList) {
+        cancelCreation?.()
+        selectionAnchor = -1
+        $('#file-list').innerHTML = visibleFiles().map(f => {
+            const meta = f.type === 'directory' ? '目录' : `${size(f.size)} · ${when(f.modifiedAt)}`
+            const directory = f.type === 'directory', expanded = expandedFolders.has(f.name)
+            return `<div class="file-row ${directory ? 'directory' : ''} ${selectedFiles.has(f.name) ? 'selected' : ''}" style="padding-left:${8 + f.depth * 16}px" data-name="${esc(f.name)}" data-type="${esc(f.type)}" ${directory ? `aria-expanded="${expanded}"` : ''} title="${esc(f.name)}&#10;${esc(meta)}"><span class="file-chevron">${directory ? icon(expanded ? 'chevron-down' : 'chevron-right', 14) : ''}</span>${icon(directory ? (expanded ? 'folder-open' : 'folder') : 'file')}<span class="file-name"><span>${esc(f.name.split('/').pop())}</span></span><button class="file-download icon-button" data-download title="下载" aria-label="下载 ${esc(f.name)}">${icon('download', 14)}</button></div>`
+        }).join('')
+    }
     else $('#file-list').querySelectorAll<HTMLElement>('.file-row').forEach(row => {
         row.classList.toggle('selected', selectedFiles.has(row.dataset.name ?? ''))
     })
     $('#file-empty').classList.toggle('hidden', !session || !!entries.length)
     $('#file-empty').innerHTML = `<strong>这个文件夹是空的</strong><p>将文件或文件夹拖到此区域，上传至当前目录</p>`
-    const picked = entries.filter(f => selectedFiles.has(f.name))
+    const picked = visibleFiles().filter(f => selectedFiles.has(f.name))
     $('#file-count').textContent = session ? `${entries.length} 个项目` : '等待连接'
     $('#file-meta').textContent = picked.length === 1 && picked[0].type === 'file' ? `${size(picked[0].size)} · ${when(picked[0].modifiedAt)}` : picked.length ? `已选 ${picked.length}` : ''
     paintIcons()
@@ -659,7 +791,8 @@ selectionBox.className = 'selection-box hidden'
 document.body.appendChild(selectionBox)
 const fileMenu = document.createElement('div')
 fileMenu.className = 'file-context-menu hidden'
-fileMenu.innerHTML = '<button data-action="preview">预览图片</button><button data-action="download">下载选中项</button><button data-action="delete">删除选中项</button>'
+fileMenu.innerHTML = '<button data-action="new-file">新建文件...</button><button data-action="new-folder">新建文件夹...</button><hr><button data-action="preview">预览图片</button><button data-action="download">下载选中项</button><button data-action="delete">删除选中项</button>'
+let menuParent = ''
 document.body.appendChild(fileMenu)
 const previewDialog = document.createElement('dialog')
 previewDialog.className = 'image-preview'
@@ -847,7 +980,7 @@ async function previewFile(name: string) {
 
 let suppressFileClick = false
 $('#file-list').addEventListener('pointerdown', e => {
-    if (e.button !== 0 || (e.target as HTMLElement).closest('[data-download]')) return
+    if (e.button !== 0 || (e.target as HTMLElement).closest('[data-download], .file-create-row')) return
     const startX = e.clientX, startY = e.clientY, original = new Set(selectedFiles)
     let dragging = false
     const move = (event: PointerEvent) => {
@@ -885,17 +1018,24 @@ $('#file-list').addEventListener('pointerdown', e => {
     window.addEventListener('pointerup', finish);
     window.addEventListener('pointercancel', finish)
 })
-$('#file-list').oncontextmenu = e => {
+$('#dropzone').oncontextmenu = e => {
+    if ((e.target as HTMLElement).closest('.file-create-row')) return
+    if (!session) return
     const row = (e.target as HTMLElement).closest<HTMLElement>('.file-row')
-    if (!row?.dataset.name) return
     e.preventDefault()
-    if (!selectedFiles.has(row.dataset.name)) {
+    menuParent = creationParent(visibleFiles().find(f => f.name === row?.dataset.name))
+    if (!row?.dataset.name) {
+        selectedFiles.clear()
+        renderFiles(false)
+    } else if (!selectedFiles.has(row.dataset.name)) {
         selectedFiles.clear();
         selectedFiles.add(row.dataset.name);
         renderFiles(false)
     }
-    const previewEntries = entries.filter(f => selectedFiles.has(f.name))
+    const previewEntries = visibleFiles().filter(f => selectedFiles.has(f.name))
     $<HTMLButtonElement>('[data-action="preview"]').disabled = previewEntries.length !== 1 || !isPreviewImage(previewEntries[0])
+    $<HTMLButtonElement>('[data-action="download"]').disabled = !selectedFiles.size
+    $<HTMLButtonElement>('[data-action="delete"]').disabled = !selectedFiles.size
     fileMenu.classList.remove('hidden')
     fileMenu.style.left = `${Math.min(e.clientX, window.innerWidth - fileMenu.offsetWidth)}px`
     fileMenu.style.top = `${Math.min(e.clientY, window.innerHeight - fileMenu.offsetHeight)}px`
@@ -906,8 +1046,12 @@ document.addEventListener('pointerdown', e => {
 fileMenu.onclick = async e => {
     const action = (e.target as HTMLElement).closest<HTMLElement>('[data-action]')?.dataset.action
     fileMenu.classList.add('hidden')
+    if (action === 'new-file' || action === 'new-folder') {
+        void createEntry(action === 'new-file' ? 'file' : 'directory', menuParent)
+        return
+    }
     if (action === 'preview') {
-        const entry = entries.find(f => selectedFiles.has(f.name))
+        const entry = visibleFiles().find(f => selectedFiles.has(f.name))
         if (selectedFiles.size === 1 && entry && isPreviewImage(entry)) void previewFile(entry.name)
         return
     }
@@ -916,8 +1060,8 @@ fileMenu.onclick = async e => {
         return
     }
     if (action !== 'delete' || !session || !selectedFiles.size) return
-    const names = [...selectedFiles], sid = session, dir = currentPath
-    const hasDirectories = entries.some(f => selectedFiles.has(f.name) && f.type === 'directory')
+    const names = [...selectedFiles].filter(name => ![...selectedFiles].some(parent => name.startsWith(parent + '/'))), sid = session, dir = currentPath
+    const hasDirectories = visibleFiles().some(f => selectedFiles.has(f.name) && f.type === 'directory')
     const warning = hasDirectories ? '文件夹及其所有内容将被删除。' : ''
     if (!confirm(`确定删除 ${names.length} 个项目？${warning}此操作无法撤销。\n\n${names.join('\n')}`)) return
     const failures: string[] = []
@@ -941,11 +1085,12 @@ $('#file-list').onclick = e => {
         void downloadFile(row.dataset.name);
         return
     }
-    const index = entries.findIndex(f => f.name === row.dataset.name)
+    const rows = visibleFiles()
+    const index = rows.findIndex(f => f.name === row.dataset.name)
     if (mouse.shiftKey && selectionAnchor >= 0) {
         if (!mouse.ctrlKey) selectedFiles.clear()
-        for (let i = Math.min(selectionAnchor, index); i <= Math.max(selectionAnchor, index); i++) selectedFiles.add(entries[i].name)
-    } else if (entries[index]) {
+        for (let i = Math.min(selectionAnchor, index); i <= Math.max(selectionAnchor, index); i++) selectedFiles.add(rows[i].name)
+    } else if (rows[index]) {
         if (!mouse.ctrlKey && !mouse.metaKey) selectedFiles.clear()
         if ((mouse.ctrlKey || mouse.metaKey) && selectedFiles.has(row.dataset.name)) selectedFiles.delete(row.dataset.name)
         else selectedFiles.add(row.dataset.name)
@@ -955,6 +1100,17 @@ $('#file-list').onclick = e => {
         selectionAnchor = index
     }
     renderFiles(false)
+    if (row.dataset.type === 'directory' && mouse.detail === 1 && !mouse.shiftKey && !mouse.ctrlKey && !mouse.metaKey) {
+        const name = row.dataset.name
+        if (expandedFolders.has(name)) {
+            cancelCreation?.()
+            expandedFolders.delete(name)
+            for (const selectedName of selectedFiles) {
+                if (selectedName.startsWith(name + '/')) selectedFiles.delete(selectedName)
+            }
+            renderFiles()
+        } else void expandFolder(name)
+    }
 }
 // Text editor contract: GET returns {content, version}; POST accepts both and returns {version}.
 const editorDialog = document.createElement('dialog')
@@ -1060,11 +1216,11 @@ async function saveTextFile() {
 window.addEventListener('beforeunload', event => { if (editorDirty() || editor?.saving) event.preventDefault() })
 
 $('#file-list').ondblclick = e => {
-    if ((e.target as HTMLElement).closest('[data-download]')) return
+    if ((e.target as HTMLElement).closest('[data-download], .file-create-row')) return
     const row = (e.target as HTMLElement).closest<HTMLElement>('.file-row')
     if (row?.dataset.type === 'directory' && row.dataset.name) void loadFiles(joinPath(currentPath, row.dataset.name))
     else if (row?.dataset.name) {
-        const entry = entries.find(f => f.name === row.dataset.name);
+        const entry = visibleFiles().find(f => f.name === row.dataset.name);
         if (entry && isPreviewImage(entry)) void previewFile(entry.name)
         else if (entry) void openTextFile(entry)
     }

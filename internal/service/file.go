@@ -688,3 +688,23 @@ func openUploadSource(localPath string, expected *SourceSnapshot) (*os.File, os.
 	}
 	return file, info, nil
 }
+
+func (s *FileSvr) CreateFile(client *sftp.Client, filePath, name string) error {
+	if !path.IsAbs(filePath) {
+		return fmt.Errorf("%s is not an absolute path", filePath)
+	}
+
+	file, err := client.OpenFile(path.Join(filePath, name), os.O_WRONLY|os.O_CREATE|os.O_EXCL)
+	if err != nil {
+		return err
+	}
+	return file.Close()
+}
+
+func (s *FileSvr) CreateDir(client *sftp.Client, dirPath string) error {
+	if !path.IsAbs(dirPath) {
+		return fmt.Errorf("%s is not an absolute path", dirPath)
+	}
+
+	return client.Mkdir(dirPath)
+}

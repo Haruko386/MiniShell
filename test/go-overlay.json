@@ -1,0 +1,6 @@
+{
+  "Replace": {
+    "internal/service/session_hostkey_test.go": "test/testdata/service/session_hostkey_test.go",
+    "internal/service/session_write_lock_test.go": "test/testdata/service/session_write_lock_test.go"
+  }
+}

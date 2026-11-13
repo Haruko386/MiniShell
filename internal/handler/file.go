@@ -35,8 +35,8 @@ func (h *FileHandler) List(c *gin.Context) {
 		return
 	}
 
-	dirPath := strings.TrimSpace(c.Query("path"))
-	if dirPath == "" {
+	dirPath := c.Query("path")
+	if strings.TrimSpace(dirPath) == "" {
 		c.JSON(http.StatusBadRequest, gin.H{
 			"message": "invalid request path",
 		})
@@ -105,8 +105,8 @@ func (h *FileHandler) Upload(c *gin.Context) {
 		return
 	}
 
-	dirPath := strings.TrimSpace(c.Query("path"))
-	if dirPath == "" {
+	dirPath := c.Query("path")
+	if strings.TrimSpace(dirPath) == "" {
 		c.JSON(http.StatusBadRequest, gin.H{
 			"message": "invalid request path",
 		})
@@ -243,8 +243,8 @@ func (h *FileHandler) Download(c *gin.Context) {
 		return
 	}
 
-	dirPath := strings.TrimSpace(c.Query("path"))
-	if dirPath == "" {
+	dirPath := c.Query("path")
+	if strings.TrimSpace(dirPath) == "" {
 		c.JSON(http.StatusBadRequest, gin.H{
 			"message": "invalid request path",
 		})
@@ -393,5 +393,98 @@ func (h *FileHandler) WriteFile(c *gin.Context) {
 
 	c.JSON(http.StatusOK, gin.H{
 		"version": version,
+	})
+}
+
+func (h *FileHandler) CreateFile(c *gin.Context) {
+	id := strings.TrimSpace(c.Param("id"))
+	if id == "" {
+		c.JSON(http.StatusBadRequest, gin.H{
+			"message": "invalid request id",
+		})
+		return
+	}
+
+	var req dto.CreateEntryRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{
+			"message": err.Error(),
+		})
+		return
+	}
+	if !path.IsAbs(req.Path) || req.Name == "." || req.Name == ".." || strings.ContainsAny(req.Name, "/\\\x00") {
+		c.JSON(http.StatusBadRequest, gin.H{"message": "invalid path or name"})
+		return
+	}
+
+	sftpClient, release, err := h.sessionSvr.AcquireSFTP(id)
+	if err != nil {
+		status := http.StatusBadGateway
+		if errors.Is(err, service.ErrSessionNotFound) {
+			status = http.StatusNotFound
+		}
+		c.JSON(status, gin.H{
+			"message": err.Error(),
+		})
+		return
+	}
+	defer release()
+
+	if err := h.fileSvr.CreateFile(sftpClient, req.Path, req.Name); err != nil {
+		c.JSON(http.StatusBadGateway, gin.H{
+			"message": err.Error(),
+		})
+		return
+	}
+
+	c.JSON(http.StatusCreated, gin.H{
+		"path": path.Join(req.Path, req.Name),
+		"type": "file",
+	})
+}
+
+func (h *FileHandler) CreateDir(c *gin.Context) {
+	id := strings.TrimSpace(c.Param("id"))
+	if id == "" {
+		c.JSON(http.StatusBadRequest, gin.H{
+			"message": "invalid request id",
+		})
+		return
+	}
+
+	var req dto.CreateEntryRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{
+			"message": err.Error(),
+		})
+		return
+	}
+	if !path.IsAbs(req.Path) || req.Name == "." || req.Name == ".." || strings.ContainsAny(req.Name, "/\\\x00") {
+		c.JSON(http.StatusBadRequest, gin.H{"message": "invalid path or name"})
+		return
+	}
+
+	sftpClient, release, err := h.sessionSvr.AcquireSFTP(id)
+	if err != nil {
+		status := http.StatusBadGateway
+		if errors.Is(err, service.ErrSessionNotFound) {
+			status = http.StatusNotFound
+		}
+		c.JSON(status, gin.H{
+			"message": err.Error(),
+		})
+		return
+	}
+	defer release()
+
+	if err := h.fileSvr.CreateDir(sftpClient, path.Join(req.Path, req.Name)); err != nil {
+		c.JSON(http.StatusBadGateway, gin.H{
+			"message": err.Error(),
+		})
+		return
+	}
+	c.JSON(http.StatusCreated, gin.H{
+		"path": path.Join(req.Path, req.Name),
+		"type": "directory",
 	})
 }
