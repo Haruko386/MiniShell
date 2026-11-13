@@ -1,0 +1,6 @@
+{
+  "Replace": {
+    "upload_test.go": "../test/desktop/testdata/upload_test.go",
+    "window_state_windows_test.go": "../test/desktop/testdata/window_state_windows_test.go"
+  }
+}

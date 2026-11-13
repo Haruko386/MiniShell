@@ -40,6 +40,8 @@ func (r *Router) Setup(e *gin.Engine) {
 			sessions.GET("/:id/files", r.fileHandler.List)
 			sessions.DELETE("/:id/files", r.fileHandler.Delete)
 			sessions.POST("/:id/files", r.fileHandler.Upload)
+			sessions.POST("/:id/files/create", r.fileHandler.CreateFile)
+			sessions.POST("/:id/directories", r.fileHandler.CreateDir)
 			sessions.GET("/:id/download", r.fileHandler.Download)
 			sessions.GET("/:id/preview", r.fileHandler.Preview)
 
