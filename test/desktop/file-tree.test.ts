@@ -49,6 +49,14 @@ test('creation in an empty folder stays before the next sibling', () => {
     assert.equal(creationIndex([], '', 'file'), 0)
 })
 
+test('missing creation parent does not read a nonexistent row', () => {
+    const rows = flattenFiles(roots, expanded)
+    for (const type of ['file', 'directory'] as const) {
+        assert.equal(creationIndex(rows, 'missing', type), rows.length)
+        assert.equal(creationIndex([], 'missing', type), 0)
+    }
+})
+
 test('right-click creation sends the target folder, not the explorer root', async () => {
     const parent = creationParent(dir('DA2/models'))
     await createRemoteEntry(async (url, init) => {

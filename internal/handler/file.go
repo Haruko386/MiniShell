@@ -35,8 +35,8 @@ func (h *FileHandler) List(c *gin.Context) {
 		return
 	}
 
-	dirPath := strings.TrimSpace(c.Query("path"))
-	if dirPath == "" {
+	dirPath := c.Query("path")
+	if strings.TrimSpace(dirPath) == "" {
 		c.JSON(http.StatusBadRequest, gin.H{
 			"message": "invalid request path",
 		})
@@ -105,8 +105,8 @@ func (h *FileHandler) Upload(c *gin.Context) {
 		return
 	}
 
-	dirPath := strings.TrimSpace(c.Query("path"))
-	if dirPath == "" {
+	dirPath := c.Query("path")
+	if strings.TrimSpace(dirPath) == "" {
 		c.JSON(http.StatusBadRequest, gin.H{
 			"message": "invalid request path",
 		})
@@ -243,8 +243,8 @@ func (h *FileHandler) Download(c *gin.Context) {
 		return
 	}
 
-	dirPath := strings.TrimSpace(c.Query("path"))
-	if dirPath == "" {
+	dirPath := c.Query("path")
+	if strings.TrimSpace(dirPath) == "" {
 		c.JSON(http.StatusBadRequest, gin.H{
 			"message": "invalid request path",
 		})

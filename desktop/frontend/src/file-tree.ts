@@ -19,6 +19,7 @@ export function creationParent(entry?: FileEntry): string {
 // New folders precede siblings; new files follow the directory subtrees.
 export function creationIndex(rows: TreeEntry[], parent: string, type: FileEntry['type']): number {
     const parentIndex = parent ? rows.findIndex(row => row.name === parent) : -1
+    if (parent && parentIndex === -1) return rows.length
     const depth = parent ? rows[parentIndex].depth + 1 : 0
     let index = parentIndex + 1
     if (type === 'file') {

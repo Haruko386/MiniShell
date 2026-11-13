@@ -95,6 +95,8 @@ let session = '', socket: WebSocket | undefined, currentPath = '/', entries: Ent
 const expandedFolders = new Map<string, Entry[]>()
 const visibleFiles = () => flattenFiles(entries, expandedFolders)
 let cancelCreation: (() => void) | undefined
+let creationVersion = 0
+let directoryLoadVersion = 0
 let queueWidth = 300
 let sideWidth = 264
 let sideOpen = true
@@ -387,10 +389,12 @@ $('#new-folder').onclick = () => createEntry('directory')
 
 async function createEntry(type: 'file' | 'directory', parent = creationParent(visibleFiles().find(f => selectedFiles.has(f.name)))) {
     if (!session) return toast('请先连接服务器')
+    const version = ++creationVersion
+    const ownsForm = () => creationVersion === version
     cancelCreation?.()
     const sid = session, root = currentPath, dir = parent ? joinPath(root, parent) : root
-    if (parent && !expandedFolders.has(parent) && !await expandFolder(parent)) return
-    if (session !== sid || currentPath !== root) return
+    if (parent && !expandedFolders.has(parent) && !await expandFolder(parent, ownsForm)) return
+    if (session !== sid || currentPath !== root || !ownsForm()) return
     renderFiles()
     const label = type === 'file' ? '文件' : '文件夹'
     const rows = visibleFiles(), index = creationIndex(rows, parent, type)
@@ -423,11 +427,12 @@ async function createEntry(type: 'file' | 'directory', parent = creationParent(v
         input.readOnly = true
         try {
             await createRemoteEntry(api, type, sid, dir, name)
+            if (!ownsForm()) return
             cancel()
             if (session === sid && currentPath === root) {
-                if (parent) await expandFolder(parent)
-                else await loadFiles(root)
-                if (session !== sid || currentPath !== root) return
+                if (parent) await expandFolder(parent, ownsForm)
+                else await loadFiles(root, ownsForm)
+                if (session !== sid || currentPath !== root || !ownsForm()) return
                 selectedFiles.clear()
                 const createdName = parent ? `${parent}/${name}` : name
                 selectedFiles.add(createdName)
@@ -436,7 +441,9 @@ async function createEntry(type: 'file' | 'directory', parent = creationParent(v
                 if (type === 'file' && created) void openTextFile(created)
             }
         } catch (err) {
-            error.textContent = err instanceof Error ? err.message : '创建失败'
+            const message = err instanceof Error ? err.message : '创建失败'
+            if (!form.isConnected) { toast(message); return }
+            error.textContent = message
             error.classList.remove('hidden')
             input.setAttribute('aria-invalid', 'true')
         } finally {
@@ -668,11 +675,12 @@ async function readDirectory(sid: string, path: string) {
     return {path: data.path as string, entries: files}
 }
 
-async function expandFolder(name: string) {
+async function expandFolder(name: string, ownsForm = () => true) {
     const sid = session, root = currentPath
+    const loadVersion = directoryLoadVersion
     try {
         const data = await readDirectory(sid, joinPath(root, name))
-        if (session !== sid || currentPath !== root) return false
+        if (session !== sid || currentPath !== root || loadVersion !== directoryLoadVersion || !ownsForm()) return false
         expandedFolders.set(name, data.entries)
         renderFiles()
         return true
@@ -682,27 +690,29 @@ async function expandFolder(name: string) {
     }
 }
 
-async function loadFiles(path: string) {
+async function loadFiles(path: string, ownsForm = () => true) {
     cancelCreation?.()
     if (!session) {
         toast('请先连接服务器');
         return
     }
     const requestedSession = session
+    const loadVersion = ++directoryLoadVersion
+    const ownsLoad = () => session === requestedSession && loadVersion === directoryLoadVersion && ownsForm()
     try {
         const data = await readDirectory(requestedSession, path)
-        if (session !== requestedSession) return
+        if (!ownsLoad()) return
         if (currentPath !== data.path) expandedFolders.clear()
         else {
             await Promise.all([...expandedFolders.keys()].map(async name => {
                 try {
                     const child = await readDirectory(requestedSession, joinPath(data.path, name))
-                    if (session === requestedSession && currentPath === data.path) expandedFolders.set(name, child.entries)
+                    if (ownsLoad() && currentPath === data.path && expandedFolders.has(name)) expandedFolders.set(name, child.entries)
                 } catch {
-                    if (session === requestedSession && currentPath === data.path) expandedFolders.delete(name)
+                    if (ownsLoad() && currentPath === data.path) expandedFolders.delete(name)
                 }
             }))
-            if (session !== requestedSession) return
+            if (!ownsLoad()) return
         }
         entries = data.entries
         currentPath = data.path
@@ -710,7 +720,7 @@ async function loadFiles(path: string) {
         selectionAnchor = -1
         renderFiles()
     } catch (err) {
-        toast(err instanceof Error ? err.message : '读取目录失败')
+        if (ownsLoad()) toast(err instanceof Error ? err.message : '读取目录失败')
     }
 }
 
@@ -1208,7 +1218,7 @@ window.addEventListener('beforeunload', event => { if (editorDirty() || editor?.
 $('#file-list').ondblclick = e => {
     if ((e.target as HTMLElement).closest('[data-download], .file-create-row')) return
     const row = (e.target as HTMLElement).closest<HTMLElement>('.file-row')
-    if (row?.dataset.type === 'directory') return
+    if (row?.dataset.type === 'directory' && row.dataset.name) void loadFiles(joinPath(currentPath, row.dataset.name))
     else if (row?.dataset.name) {
         const entry = visibleFiles().find(f => f.name === row.dataset.name);
         if (entry && isPreviewImage(entry)) void previewFile(entry.name)
