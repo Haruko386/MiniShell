@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/Haruko386/MiniShell/internal/common"
+	"github.com/Haruko386/MiniShell/internal/entity"
 	"github.com/pkg/sftp"
 	"golang.org/x/crypto/ssh"
 )
@@ -42,6 +43,9 @@ type sshSession struct {
 
 	identity connectionIdentity
 	saveSlot chan struct{}
+
+	metricSlot chan struct{}
+	metrics    entity.MetricsCache
 }
 
 type connectionIdentity struct {
@@ -254,10 +258,11 @@ func (s *SessionSvr) Connect(host, username, password string, port int, policy H
 
 	s.Mu.Lock()
 	s.sessions[id] = &sshSession{
-		client:   client,
-		closed:   make(chan struct{}),
-		identity: connectionIdentity{strings.ToLower(strings.TrimSuffix(host, ".")), port, username},
-		saveSlot: make(chan struct{}, 1),
+		client:     client,
+		closed:     make(chan struct{}),
+		identity:   connectionIdentity{strings.ToLower(strings.TrimSuffix(host, ".")), port, username},
+		saveSlot:   make(chan struct{}, 1),
+		metricSlot: make(chan struct{}, 1),
 	}
 	s.Mu.Unlock()
 

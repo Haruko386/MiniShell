@@ -11,6 +11,7 @@ import (
 type Router struct {
 	sessionHandler *handler.SessionHandler
 	fileHandler    *handler.FileHandler
+	metricsHandler *handler.MetricsHandler
 	sessionSvr     *service.SessionSvr
 }
 
@@ -19,6 +20,7 @@ func NewRouter(sessionSvr *service.SessionSvr, fileSvr *service.FileSvr) *Router
 	return &Router{
 		sessionHandler: handler.NewSessionHandler(sessionSvr),
 		fileHandler:    handler.NewFileHandler(sessionSvr, fileSvr),
+		metricsHandler: handler.NewMetricsHandler(sessionSvr),
 		sessionSvr:     sessionSvr,
 	}
 }
@@ -44,6 +46,7 @@ func (r *Router) Setup(e *gin.Engine) {
 			sessions.POST("/:id/directories", r.fileHandler.CreateDir)
 			sessions.GET("/:id/download", r.fileHandler.Download)
 			sessions.GET("/:id/preview", r.fileHandler.Preview)
+			sessions.GET("/:id/metrics", r.metricsHandler.Get)
 
 			sessions.GET("/:id/content", r.fileHandler.GetFile)
 			sessions.POST("/:id/content", r.fileHandler.WriteFile)
