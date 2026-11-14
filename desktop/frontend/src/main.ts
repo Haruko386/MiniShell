@@ -65,6 +65,8 @@ import {createIcons, icons} from 'lucide'
 import {joinPath, parentPath, parts} from './path'
 import {createRemoteEntry} from './create-entry'
 import {flattenFiles, creationParent, creationIndex} from './file-tree'
+import {pollResources, resourceBytes, resourcePercent} from './resource-monitor'
+import type {ResourceMetrics} from './resource-monitor'
 import './style.css'
 
 type Connection = { id: string; name: string; host: string; port: number; username: string; password?: string }
@@ -133,6 +135,34 @@ const esc = (s: unknown) => String(s).replace(/[&<>"']/g, c => ({
 app.innerHTML = `<header class="topbar"><span class="logo">${icon('terminal')}</span><strong class="tab-label" id="crumb">新标签页</strong><span class="spacer"></span><span class="top-status"><span class="status-dot"></span><span id="status">未连接</span></span></header><div class="shell"><button class="dock hidden" id="open-side" type="button" title="展开左侧">${icon('panel-left')}</button><aside class="sidebar" id="sidebar"><div class="side-resize" id="side-resize" title="拖动调整宽度，拖到最左收起"></div><div class="side-heading"><button class="icon-button" id="toggle-connections" title="收起连接">${icon('chevron-down')}</button><span id="connection-count">连接</span><button class="icon-button" id="theme" type="button" title="主题"></button><button class="icon-button" id="add" title="新建连接">${icon('plus')}</button></div><div class="connection-list" id="connections"></div><div id="file-pane" class="hidden"><div class="side-heading"><button class="icon-button" id="toggle-files" title="收起文件">${icon('chevron-down')}</button><span class="file-heading" id="file-heading">文件</span><span class="heading-tools"><button class="icon-button" id="new-file" title="新建文件">${icon('file-plus')}</button><button class="icon-button" id="new-folder" title="新建目录">${icon('folder-plus')}</button><button class="icon-button" id="refresh" title="刷新">${icon('refresh-cw')}</button></span></div><div id="file-body"><div class="path-row"><div class="crumb" id="crumb-bar"></div><form class="path-edit hidden" id="path-form"><input id="path" aria-label="远程路径" spellcheck="false"></form><button class="icon-button" id="up" title="上一级">${icon('arrow-up')}</button></div><div id="dropzone"><div class="file-list" id="file-list"></div><div id="file-empty" class="file-empty"></div><div class="drop-overlay">${icon('upload', 22)}<strong>松开以上传文件或文件夹</strong></div></div><div class="side-footer"><span id="file-count">等待连接</span><span id="file-meta"></span></div></div></aside><main class="main"><section class="welcome" id="welcome"><div class="welcome-card"><div class="welcome-face" id="welcome-face"></div><div id="quick-rows"></div></div></section><section class="terminal-pane hidden" id="terminal-pane"><div id="terminal"></div></section></main><aside class="transfer-rail hidden" id="transfer-rail"><button class="icon-button" id="toggle-transfers" title="传输队列">${icon('arrow-up-down')}</button><span class="badge hidden" id="transfer-badge"></span></aside><aside class="queue hidden" id="queue"><div class="queue-resize" id="queue-resize" title="拖动调整宽度，双击收起"></div><div class="queue-head"><span id="transfer-summary">传输</span><span><button class="button" id="clear-done" type="button">清空完成</button><button class="icon-button" id="close-queue" title="收起">${icon('x')}</button></span></div><div class="transfers" id="transfers"></div></aside></div><dialog id="connection-dialog"><form id="connection-form" class="dialog-content"><div class="dialog-heading"><div><h2 id="dialog-title">新建连接</h2></div><button type="button" class="icon-button" id="close-dialog">${icon('x')}</button></div><label>连接名称<input name="name" required placeholder="server" maxlength="80"></label><div class="form-row"><label>主机地址<input name="host" required placeholder="172.0.0.1"></label><label>端口<input name="port" type="number" min="1" max="65535" required value="22"></label></div><label>用户名<input name="username" required placeholder="root"></label><label>密码<input name="password" type="password" required autocomplete="current-password" placeholder="password"></label><div class="dialog-actions"><button type="button" class="button" id="cancel-dialog">取消</button><button class="button primary">保存连接</button></div></form></dialog><div id="toast" role="status"></div>`
 
 const $ = <T extends HTMLElement>(s: string) => document.querySelector<T>(s)!
+$('#terminal-pane').insertAdjacentHTML('afterbegin', `<div class="resource-bar" aria-label="远端资源监控"><span class="resource-item">${icon('cpu', 14)}<span>CPU</span><strong id="resource-cpu">—</strong><meter id="resource-cpu-meter" min="0" max="100" value="0" aria-label="CPU 使用率" hidden></meter></span><span class="resource-item">${icon('memory-stick', 14)}<span>内存</span><strong id="resource-memory">—</strong><span id="resource-memory-size" class="resource-detail"></span></span><span class="resource-item resource-network">${icon('network', 14)}<span>网络</span><span title="远端接收速率">↓ <strong id="resource-rx">—</strong></span><span title="远端发送速率">↑ <strong id="resource-tx">—</strong></span></span><span id="resource-state" class="resource-state" role="status">等待连接</span></div>`)
+let stopResourcePolling: (() => void) | undefined
+
+function renderResources(metrics?: ResourceMetrics, state = '') {
+    $('#resource-cpu').textContent = resourcePercent(metrics?.cpuPercent ?? null)
+    const meter = $<HTMLMeterElement>('#resource-cpu-meter')
+    meter.hidden = metrics?.cpuPercent == null
+    meter.value = metrics?.cpuPercent ?? 0
+    $('#resource-memory').textContent = resourcePercent(metrics?.memory.usedPercent ?? null)
+    $('#resource-memory-size').textContent = metrics ? `${resourceBytes(metrics.memory.usedBytes)} / ${resourceBytes(metrics.memory.totalBytes)}` : ''
+    $('#resource-rx').textContent = metrics?.network.rxBytesPerSecond == null ? '—' : `${resourceBytes(metrics.network.rxBytesPerSecond)}/s`
+    $('#resource-tx').textContent = metrics?.network.txBytesPerSecond == null ? '—' : `${resourceBytes(metrics.network.txBytesPerSecond)}/s`
+    $('#resource-state').textContent = state
+    $('#resource-state').title = metrics ? `采样时间：${metrics.sampledAt}` : state
+}
+
+function refreshResourcePolling() {
+    stopResourcePolling?.()
+    stopResourcePolling = undefined
+    renderResources(undefined, !session ? '等待连接' : document.hidden ? '已暂停' : '正在采样')
+    if (!session || document.hidden) return
+    const sid = session
+    stopResourcePolling = pollResources(async signal => {
+        const response = await api(`/api/sessions/${encodeURIComponent(sid)}/metrics`, {signal})
+        return await response.json() as ResourceMetrics
+    }, metrics => renderResources(metrics, metrics.cpuPercent === null || metrics.network.rxBytesPerSecond === null || metrics.network.txBytesPerSecond === null ? '正在采样' : '实时'), () => renderResources(undefined, '暂不可用'))
+}
+document.addEventListener('visibilitychange', refreshResourcePolling)
 type ThemeChoice = 'system' | 'light' | 'dark'
 const themeKey = 'minishell.theme'
 const themeQuery = window.matchMedia('(prefers-color-scheme: dark)')
@@ -477,6 +507,7 @@ function setQueue(open: boolean) {
 }
 
 function setConnected(on: boolean) {
+    refreshResourcePolling()
     $('#file-pane').classList.toggle('hidden', !on)
     $('#welcome').classList.toggle('hidden', on)
     $('#terminal-pane').classList.toggle('hidden', !on)
