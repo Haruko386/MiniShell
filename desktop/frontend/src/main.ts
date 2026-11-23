@@ -67,6 +67,8 @@ import {createRemoteEntry} from './create-entry'
 import {flattenFiles, creationParent, creationIndex} from './file-tree'
 import {pollResources, resourceBytes, resourcePercent} from './resource-monitor'
 import type {ResourceMetrics} from './resource-monitor'
+import {diskUsageClass} from './disk-monitor'
+import type {DiskSnapshot} from './disk-monitor'
 import './style.css'
 
 type Connection = { id: string; name: string; host: string; port: number; username: string; password?: string }
@@ -105,6 +107,11 @@ let sideWidth = 264
 let sideOpen = true
 let connectionsOpen = true
 let filesOpen = true
+let disksOpen = true
+let diskHeight = 240
+let diskSession = ''
+let diskRequest: AbortController | undefined
+let diskTimer: ReturnType<typeof setTimeout> | undefined
 const kaomoji = [
     '(＾▽＾)', '(￣▽￣)', '(・∀・)', '(°∀°)', '(´∀｀)', '(＾ω＾)',
     '(๑•̀ㅂ•́)و✧', '(ง •̀_•́)ง', '(๑•́ ₃ •̀๑)', '(｡•́︿•̀｡)',
@@ -132,7 +139,7 @@ const esc = (s: unknown) => String(s).replace(/[&<>"']/g, c => ({
     "'": '&#39;'
 }[c]!))
 
-app.innerHTML = `<header class="topbar"><span class="logo">${icon('terminal')}</span><strong class="tab-label" id="crumb">新标签页</strong><span class="spacer"></span><span class="top-status"><span class="status-dot"></span><span id="status">未连接</span></span></header><div class="shell"><button class="dock hidden" id="open-side" type="button" title="展开左侧">${icon('panel-left')}</button><aside class="sidebar" id="sidebar"><div class="side-resize" id="side-resize" title="拖动调整宽度，拖到最左收起"></div><div class="side-heading"><button class="icon-button" id="toggle-connections" title="收起连接">${icon('chevron-down')}</button><span id="connection-count">连接</span><button class="icon-button" id="theme" type="button" title="主题"></button><button class="icon-button" id="add" title="新建连接">${icon('plus')}</button></div><div class="connection-list" id="connections"></div><div id="file-pane" class="hidden"><div class="side-heading"><button class="icon-button" id="toggle-files" title="收起文件">${icon('chevron-down')}</button><span class="file-heading" id="file-heading">文件</span><span class="heading-tools"><button class="icon-button" id="new-file" title="新建文件">${icon('file-plus')}</button><button class="icon-button" id="new-folder" title="新建目录">${icon('folder-plus')}</button><button class="icon-button" id="refresh" title="刷新">${icon('refresh-cw')}</button></span></div><div id="file-body"><div class="path-row"><div class="crumb" id="crumb-bar"></div><form class="path-edit hidden" id="path-form"><input id="path" aria-label="远程路径" spellcheck="false"></form><button class="icon-button" id="up" title="上一级">${icon('arrow-up')}</button></div><div id="dropzone"><div class="file-list" id="file-list"></div><div id="file-empty" class="file-empty"></div><div class="drop-overlay">${icon('upload', 22)}<strong>松开以上传文件或文件夹</strong></div></div><div class="side-footer"><span id="file-count">等待连接</span><span id="file-meta"></span></div></div></aside><main class="main"><section class="welcome" id="welcome"><div class="welcome-card"><div class="welcome-face" id="welcome-face"></div><div id="quick-rows"></div></div></section><section class="terminal-pane hidden" id="terminal-pane"><div id="terminal"></div></section></main><aside class="transfer-rail hidden" id="transfer-rail"><button class="icon-button" id="toggle-transfers" title="传输队列">${icon('arrow-up-down')}</button><span class="badge hidden" id="transfer-badge"></span></aside><aside class="queue hidden" id="queue"><div class="queue-resize" id="queue-resize" title="拖动调整宽度，双击收起"></div><div class="queue-head"><span id="transfer-summary">传输</span><span><button class="button" id="clear-done" type="button">清空完成</button><button class="icon-button" id="close-queue" title="收起">${icon('x')}</button></span></div><div class="transfers" id="transfers"></div></aside></div><dialog id="connection-dialog"><form id="connection-form" class="dialog-content"><div class="dialog-heading"><div><h2 id="dialog-title">新建连接</h2></div><button type="button" class="icon-button" id="close-dialog">${icon('x')}</button></div><label>连接名称<input name="name" required placeholder="server" maxlength="80"></label><div class="form-row"><label>主机地址<input name="host" required placeholder="172.0.0.1"></label><label>端口<input name="port" type="number" min="1" max="65535" required value="22"></label></div><label>用户名<input name="username" required placeholder="root"></label><label>密码<input name="password" type="password" required autocomplete="current-password" placeholder="password"></label><div class="dialog-actions"><button type="button" class="button" id="cancel-dialog">取消</button><button class="button primary">保存连接</button></div></form></dialog><div id="toast" role="status"></div>`
+app.innerHTML = `<header class="topbar"><span class="logo">${icon('terminal')}</span><strong class="tab-label" id="crumb">新标签页</strong><span class="spacer"></span><span class="top-status"><span class="status-dot"></span><span id="status">未连接</span></span></header><div class="shell"><button class="dock hidden" id="open-side" type="button" title="展开左侧">${icon('panel-left')}</button><aside class="sidebar" id="sidebar"><div class="side-resize" id="side-resize" title="拖动调整宽度，拖到最左收起"></div><div class="side-heading"><button class="icon-button" id="toggle-connections" title="收起连接">${icon('chevron-down')}</button><span id="connection-count">连接</span><button class="icon-button" id="theme" type="button" title="主题"></button><button class="icon-button" id="add" title="新建连接">${icon('plus')}</button></div><div class="connection-list" id="connections"></div><div id="file-pane" class="hidden"><div class="side-heading"><button class="icon-button" id="toggle-files" title="收起文件">${icon('chevron-down')}</button><span class="file-heading" id="file-heading">文件</span><span class="heading-tools"><button class="icon-button" id="new-file" title="新建文件">${icon('file-plus')}</button><button class="icon-button" id="new-folder" title="新建目录">${icon('folder-plus')}</button><button class="icon-button" id="refresh" title="刷新">${icon('refresh-cw')}</button></span></div><div id="file-body"><div class="path-row"><div class="crumb" id="crumb-bar"></div><form class="path-edit hidden" id="path-form"><input id="path" aria-label="远程路径" spellcheck="false"></form><button class="icon-button" id="up" title="上一级">${icon('arrow-up')}</button></div><div id="dropzone"><div class="file-list" id="file-list"></div><div id="file-empty" class="file-empty"></div><div class="drop-overlay">${icon('upload', 22)}<strong>松开以上传文件或文件夹</strong></div></div><div class="side-footer"><span id="file-count">等待连接</span><span id="file-meta"></span></div></div></div><div id="disk-pane" class="hidden"><div class="disk-resize" id="disk-resize" title="拖动调整磁盘栏高度"></div><div class="side-heading"><span class="disk-heading-left"><button class="icon-button" id="toggle-disks" title="收起磁盘">${icon('chevron-down')}</button><span>磁盘</span></span><span class="heading-tools"><button class="icon-button" id="refresh-disks" title="刷新磁盘">${icon('refresh-cw')}</button></span></div><div id="disk-body"><div class="disk-list" id="disk-list"></div><div class="disk-empty hidden" id="disk-empty"></div></div></div></aside><main class="main"><section class="welcome" id="welcome"><div class="welcome-card"><div class="welcome-face" id="welcome-face"></div><div id="quick-rows"></div></div></section><section class="terminal-pane hidden" id="terminal-pane"><div id="terminal"></div></section></main><aside class="transfer-rail hidden" id="transfer-rail"><button class="icon-button" id="toggle-transfers" title="传输队列">${icon('arrow-up-down')}</button><span class="badge hidden" id="transfer-badge"></span></aside><aside class="queue hidden" id="queue"><div class="queue-resize" id="queue-resize" title="拖动调整宽度，双击收起"></div><div class="queue-head"><span id="transfer-summary">传输</span><span><button class="button" id="clear-done" type="button">清空完成</button><button class="icon-button" id="close-queue" title="收起">${icon('x')}</button></span></div><div class="transfers" id="transfers"></div></aside></div><dialog id="connection-dialog"><form id="connection-form" class="dialog-content"><div class="dialog-heading"><div><h2 id="dialog-title">新建连接</h2></div><button type="button" class="icon-button" id="close-dialog">${icon('x')}</button></div><label>连接名称<input name="name" required placeholder="server" maxlength="80"></label><div class="form-row"><label>主机地址<input name="host" required placeholder="172.0.0.1"></label><label>端口<input name="port" type="number" min="1" max="65535" required value="22"></label></div><label>用户名<input name="username" required placeholder="root"></label><label>密码<input name="password" type="password" required autocomplete="current-password" placeholder="password"></label><div class="dialog-actions"><button type="button" class="button" id="cancel-dialog">取消</button><button class="button primary">保存连接</button></div></form></dialog><div id="toast" role="status"></div>`
 
 const $ = <T extends HTMLElement>(s: string) => document.querySelector<T>(s)!
 $('#terminal-pane').insertAdjacentHTML('afterbegin', `<div class="resource-bar" aria-label="远端资源监控"><span class="resource-item">${icon('cpu', 14)}<span>CPU</span><strong id="resource-cpu">—</strong><meter id="resource-cpu-meter" min="0" max="100" value="0" aria-label="CPU 使用率" hidden></meter></span><span class="resource-item">${icon('memory-stick', 14)}<span>内存</span><strong id="resource-memory">—</strong><span id="resource-memory-size" class="resource-detail"></span></span><span class="resource-item resource-network">${icon('network', 14)}<span>网络</span><span title="远端接收速率">↓ <strong id="resource-rx">—</strong></span><span title="远端发送速率">↑ <strong id="resource-tx">—</strong></span></span><span id="resource-state" class="resource-state" role="status">等待连接</span></div>`)
@@ -162,7 +169,95 @@ function refreshResourcePolling() {
         return await response.json() as ResourceMetrics
     }, metrics => renderResources(metrics, metrics.cpuPercent === null || metrics.network.rxBytesPerSecond === null || metrics.network.txBytesPerSecond === null ? '正在采样' : '实时'), () => renderResources(undefined, '暂不可用'))
 }
-document.addEventListener('visibilitychange', refreshResourcePolling)
+function stopDiskLoading() {
+    diskRequest?.abort()
+    diskRequest = undefined
+    clearTimeout(diskTimer)
+    diskTimer = undefined
+}
+
+function renderDisks(snapshot?: DiskSnapshot, state = '') {
+    const list = $('#disk-list')
+    const empty = $('#disk-empty')
+    if (!snapshot) {
+        list.innerHTML = ''
+        list.classList.add('hidden')
+        empty.textContent = state
+        empty.classList.toggle('hidden', !state)
+        return
+    }
+
+    const disks = Array.isArray(snapshot.disks) ? snapshot.disks : []
+    if (!disks.length) {
+        list.innerHTML = ''
+        list.classList.add('hidden')
+        empty.textContent = '暂无数据'
+        empty.classList.remove('hidden')
+        return
+    }
+
+    list.classList.remove('hidden')
+    empty.classList.add('hidden')
+    list.innerHTML = disks.map(disk => {
+        const percent = Number.isFinite(disk.usedPercent) ? Math.max(0, Math.min(100, disk.usedPercent)) : 0
+        const level = diskUsageClass(percent)
+        const title = `${disk.filesystem}\n已用 ${resourceBytes(disk.usedBytes)} / ${resourceBytes(disk.totalBytes)}`
+        return `<div class="disk-row" title="${esc(title)}">
+            <div class="disk-line">
+                <span class="disk-mount" title="${esc(disk.mountPoint)}">${esc(disk.mountPoint)}</span>
+                <span class="disk-size">${resourceBytes(disk.availableBytes)} / ${resourceBytes(disk.totalBytes)}</span>
+            </div>
+            <div class="disk-meter" role="meter" aria-valuemin="0" aria-valuemax="100" aria-valuenow="${percent.toFixed(0)}" aria-label="${esc(disk.mountPoint)} 使用率">
+                <div class="disk-meter-fill ${level}" style="width:${percent}%"></div>
+            </div>
+        </div>`
+    }).join('')
+}
+
+async function loadDisks() {
+    stopDiskLoading()
+    if (!session || !disksOpen || document.hidden) return
+
+    const sid = session
+    const controller = new AbortController()
+    diskRequest = controller
+    const timeout = setTimeout(() => controller.abort(), 5000)
+
+    try {
+        const response = await api(`/api/sessions/${encodeURIComponent(sid)}/disks`, {signal: controller.signal})
+        const snapshot = await response.json() as DiskSnapshot
+        if (diskRequest !== controller || session !== sid || !disksOpen || document.hidden) return
+        renderDisks(snapshot)
+        diskTimer = setTimeout(() => void loadDisks(), 10000)
+    } catch {
+        if (diskRequest !== controller || session !== sid || !disksOpen || document.hidden) return
+        renderDisks(undefined, '暂不可用')
+        diskTimer = setTimeout(() => void loadDisks(), 10000)
+    } finally {
+        clearTimeout(timeout)
+        if (diskRequest === controller) diskRequest = undefined
+    }
+}
+
+function refreshDiskPanel() {
+    stopDiskLoading()
+    if (!session) {
+        diskSession = ''
+        renderDisks()
+        return
+    }
+    if (diskSession !== session) {
+        diskSession = session
+        renderDisks()
+    }
+    if (disksOpen) void loadDisks()
+}
+
+document.addEventListener('visibilitychange', () => {
+    refreshResourcePolling()
+    if (document.hidden) stopDiskLoading()
+    else if (disksOpen && session) void loadDisks()
+})
 type ThemeChoice = 'system' | 'light' | 'dark'
 const themeKey = 'minishell.theme'
 const themeQuery = window.matchMedia('(prefers-color-scheme: dark)')
@@ -394,8 +489,11 @@ function applyPanels() {
     if (sideOpen) $('#sidebar').style.width = `${sideWidth}px`
     $('#connections').classList.toggle('hidden', !connectionsOpen)
     $('#file-body').classList.toggle('hidden', !filesOpen)
+    $('#disk-pane').style.height = disksOpen ? `${diskHeight}px` : '36px'
+    $('#disk-body').classList.toggle('hidden', !disksOpen)
     $('#toggle-connections').innerHTML = icon(connectionsOpen ? 'chevron-down' : 'chevron-right')
     $('#toggle-files').innerHTML = icon(filesOpen ? 'chevron-down' : 'chevron-right')
+    $('#toggle-disks').innerHTML = icon(disksOpen ? 'chevron-down' : 'chevron-right')
     const c = active()
     $('#file-heading').textContent = c && session ? `${currentPath.split('/').filter(Boolean).pop() || '/'}  [SSH: ${c.name}]` : '文件'
     paintIcons()
@@ -410,6 +508,56 @@ $('#toggle-files').onclick = () => {
     filesOpen = !filesOpen;
     applyPanels()
 }
+$('#toggle-disks').onclick = () => {
+    disksOpen = !disksOpen
+    applyPanels()
+    if (disksOpen) void loadDisks()
+    else stopDiskLoading()
+}
+$('#refresh-disks').onclick = () => {
+    if (disksOpen) void loadDisks()
+}
+$('#disk-resize').addEventListener('pointerdown', event => {
+    if (event.button !== 0) return
+    event.preventDefault()
+    stopDiskLoading()
+
+    const startY = event.clientY
+    const startHeight = $('#disk-pane').offsetHeight
+    const maxHeight = Math.max(160, Math.min(480, window.innerHeight - 180))
+    let height = startHeight
+
+    const move = (e: PointerEvent) => {
+        height = Math.max(0, Math.min(maxHeight, startHeight - (e.clientY - startY)))
+        if (height < 80) {
+            if (disksOpen) {
+                disksOpen = false
+                applyPanels()
+            }
+            return
+        }
+        disksOpen = true
+        diskHeight = height
+        applyPanels()
+    }
+    const finish = () => {
+        window.removeEventListener('pointermove', move)
+        window.removeEventListener('pointerup', finish)
+        window.removeEventListener('pointercancel', finish)
+        if (disksOpen) {
+            diskHeight = Math.max(120, diskHeight)
+            applyPanels()
+            void loadDisks()
+        } else {
+            diskHeight = Math.max(diskHeight, 160)
+            applyPanels()
+        }
+    }
+
+    window.addEventListener('pointermove', move)
+    window.addEventListener('pointerup', finish)
+    window.addEventListener('pointercancel', finish)
+})
 $('#open-side').onclick = () => {
     sideOpen = true;
     sideWidth = Math.max(220, sideWidth);
@@ -509,6 +657,7 @@ function setQueue(open: boolean) {
 function setConnected(on: boolean) {
     refreshResourcePolling()
     $('#file-pane').classList.toggle('hidden', !on)
+    $('#disk-pane').classList.toggle('hidden', !on)
     $('#welcome').classList.toggle('hidden', on)
     $('#terminal-pane').classList.toggle('hidden', !on)
     const c = active()
@@ -517,6 +666,7 @@ function setConnected(on: boolean) {
     $('.top-status').classList.toggle('online', on)
     renderConnections()
     applyPanels()
+    refreshDiskPanel()
     if (!on) setQueue(false)
     else setQueue(!$('#queue').classList.contains('hidden'))
 }

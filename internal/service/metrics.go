@@ -1,18 +1,15 @@
 package service
 
 import (
-	"bytes"
 	"context"
 	"errors"
 	"fmt"
-	"io"
 	"math"
 	"strconv"
 	"strings"
 	"time"
 
 	"github.com/Haruko386/MiniShell/internal/entity"
-	"golang.org/x/crypto/ssh"
 )
 
 type rawMetrics struct {
@@ -26,11 +23,6 @@ type rawMetrics struct {
 	rxBytes  uint64
 	txBytes  uint64
 	hasNet   bool
-}
-
-type metricsReadResult struct {
-	output string
-	err    error
 }
 
 // Metrics samples the remote Linux host through a dedicated exec channel.
@@ -60,7 +52,7 @@ func (s *SessionSvr) Metrics(ctx context.Context, id string) (entity.MetricSnaps
 	default:
 	}
 
-	output, runErr := readMetrics(ctx, sess.client)
+	output, runErr := readRemoteCommand(ctx, sess.client, entity.MetricsCommand)
 	if err := ctx.Err(); err != nil {
 		return entity.MetricSnapshot{}, err
 	}
@@ -82,49 +74,6 @@ func (s *SessionSvr) Metrics(ctx context.Context, id string) (entity.MetricSnaps
 	}
 
 	return buildMetricsSnapshot(raw, time.Now(), &sess.metrics), nil
-}
-
-func readMetrics(ctx context.Context, client *ssh.Client) (string, error) {
-	done := make(chan metricsReadResult, 1)
-
-	go func() {
-		if err := ctx.Err(); err != nil {
-			done <- metricsReadResult{err: err}
-			return
-		}
-
-		channel, err := client.NewSession()
-		if err != nil {
-			done <- metricsReadResult{err: err}
-			return
-		}
-		defer channel.Close()
-
-		var output bytes.Buffer
-		channel.Stdout = &output
-		channel.Stderr = io.Discard
-
-		stop := context.AfterFunc(ctx, func() { _ = channel.Close() })
-		defer stop()
-
-		if err := ctx.Err(); err != nil {
-			done <- metricsReadResult{err: err}
-			return
-		}
-		runErr := channel.Run(entity.MetricsCommand)
-		if err := ctx.Err(); err != nil {
-			done <- metricsReadResult{err: err}
-			return
-		}
-		done <- metricsReadResult{output: output.String(), err: runErr}
-	}()
-
-	select {
-	case <-ctx.Done():
-		return "", ctx.Err()
-	case result := <-done:
-		return result.output, result.err
-	}
 }
 
 func parseMetrics(output string) (rawMetrics, error) {

@@ -675,6 +675,128 @@ button:focus-visible, input:focus-visible {
     border-top: 1px solid var(--line);
 }
 
+#disk-pane {
+    position: relative;
+    flex: none;
+    height: 240px;
+    max-height: calc(100vh - 160px);
+    display: flex;
+    flex-direction: column;
+    border-top: 1px solid var(--line);
+}
+
+.disk-resize {
+    position: absolute;
+    top: -4px;
+    left: 0;
+    right: 0;
+    height: 8px;
+    z-index: 3;
+    cursor: row-resize;
+    touch-action: none;
+}
+
+.disk-resize:hover {
+    background: var(--blue);
+}
+
+#disk-pane .side-heading {
+    border-bottom: 0;
+}
+
+.disk-heading-left {
+    flex: 1;
+    min-width: 0;
+    display: flex;
+    align-items: center;
+    gap: 6px;
+}
+
+.disk-heading-left > span {
+    flex: none;
+}
+
+#disk-body {
+    flex: 1;
+    min-height: 0;
+    display: flex;
+    flex-direction: column;
+}
+
+.disk-list {
+    flex: 1;
+    min-height: 0;
+    overflow: auto;
+    padding: 0 8px 6px;
+}
+
+.disk-row {
+    padding: 6px 8px;
+    border-radius: 6px;
+}
+
+.disk-row:hover {
+    background: var(--hover);
+}
+
+.disk-line {
+    min-width: 0;
+    display: flex;
+    align-items: baseline;
+    justify-content: space-between;
+    gap: 8px;
+}
+
+.disk-mount {
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    font-size: 12px;
+    font-weight: 600;
+}
+
+.disk-size {
+    flex: none;
+    color: var(--sub);
+    font-size: 11px;
+    white-space: nowrap;
+}
+
+.disk-meter {
+    height: 4px;
+    margin-top: 5px;
+    overflow: hidden;
+    border-radius: 999px;
+    background: var(--chip);
+}
+
+.disk-meter-fill {
+    height: 100%;
+    border-radius: inherit;
+    background: var(--green);
+    transition: width .2s ease;
+}
+
+.disk-meter-fill.warning {
+    background: var(--amber);
+}
+
+.disk-meter-fill.danger {
+    background: var(--red);
+}
+
+.disk-empty {
+    flex: 1;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 10px 12px 14px;
+    color: var(--sub);
+    font-size: 12px;
+    text-align: center;
+}
+
 .main {
     flex: 1;
     min-width: 0;
